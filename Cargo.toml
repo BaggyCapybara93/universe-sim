@@ -1,0 +1,10 @@
+[package]
+name = "universe-sim"
+version = "0.1.0"
+edition = "2024"
+description = "A deterministic, seed-driven astrophysical simulation engine"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+rayon = "1.12.0"

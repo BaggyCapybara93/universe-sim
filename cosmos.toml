@@ -1,0 +1,17 @@
+# The parser supports the simulation and generation settings shown here.
+[simulation]
+seed = 918273645
+tick_duration = "1000 years"
+
+[generation]
+galaxies = 4
+star_systems = 4
+planets_per_system_min = 1
+planets_per_system_max = 6
+star_mass_solar_min = 0.3
+star_mass_solar_max = 300.0
+planet_mass_earth_min = 0.1
+planet_mass_earth_max = 300.0
+orbit_au_min = 0.3
+orbit_au_max = 30.0
+galaxy_radius_parsecs = 25000.0
