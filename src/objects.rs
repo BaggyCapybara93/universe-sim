@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use rayon::prelude::*;
 
+use crate::chemistry::GasComposition;
 use crate::config::GenerationConfig;
 use crate::id::{GalaxyId, IdParseError, PlanetId, StarId, StarSystemId};
 use crate::orbital::{
@@ -674,6 +675,7 @@ pub struct ObjectRegistry {
     stars: BTreeMap<StarId, Star>,
     planets: BTreeMap<PlanetId, Planet>,
     gas_reservoir_solar_masses: f64,
+    gas_composition: GasComposition,
     formation_sequence: u64,
 }
 
@@ -729,6 +731,12 @@ impl ObjectRegistry {
             GalaxyMorphology::Irregular => 3.0,
             GalaxyMorphology::Dwarf => 1.0,
         };
+        let gas_metallicity = match galaxy.morphology {
+            GalaxyMorphology::Spiral => 0.014,
+            GalaxyMorphology::Elliptical => 0.020,
+            GalaxyMorphology::Irregular => 0.006,
+            GalaxyMorphology::Dwarf => 0.002,
+        };
         let galaxy = Galaxy {
             id: galaxy_id,
             position: galaxy.position,
@@ -736,6 +744,8 @@ impl ObjectRegistry {
         };
         insert_unique(&mut registry.galaxies, galaxy_id, galaxy, "galaxy")?;
         registry.gas_reservoir_solar_masses = f64::from(config.star_systems) * gas_factor;
+        registry.gas_composition = GasComposition::from_metallicity(gas_metallicity)
+            .map_err(|error| ObjectError(error.to_string()))?;
         registry.validate()?;
         Ok(registry)
     }
@@ -752,6 +762,10 @@ impl ObjectRegistry {
 
     pub const fn gas_reservoir_solar_masses(&self) -> f64 {
         self.gas_reservoir_solar_masses
+    }
+
+    pub const fn gas_composition(&self) -> GasComposition {
+        self.gas_composition
     }
 
     pub(crate) fn form_stars_between(
@@ -925,6 +939,9 @@ impl ObjectRegistry {
     }
 
     pub fn validate(&self) -> Result<(), ObjectError> {
+        self.gas_composition
+            .validate()
+            .map_err(|error| ObjectError(error.to_string()))?;
         for (galaxy_id, galaxy) in &self.galaxies {
             if *galaxy_id != galaxy.id {
                 return Err(ObjectError(
@@ -1729,9 +1746,15 @@ impl ObjectRegistry {
         output.push_str("[objects]\n");
         writeln!(
             output,
-            "M|{}|{}",
+            "M|{}|{}|{}|{}|{}|{}|{}|{}",
             float_bits(self.gas_reservoir_solar_masses),
-            self.formation_sequence
+            self.formation_sequence,
+            float_bits(self.gas_composition.hydrogen_fraction()),
+            float_bits(self.gas_composition.helium_fraction()),
+            float_bits(self.gas_composition.carbon_fraction()),
+            float_bits(self.gas_composition.oxygen_fraction()),
+            float_bits(self.gas_composition.iron_fraction()),
+            float_bits(self.gas_composition.other_metals_fraction()),
         )
         .expect("writing to a String cannot fail");
         for galaxy in self.galaxies.values() {
@@ -1839,10 +1862,26 @@ impl ObjectRegistry {
             let fields: Vec<_> = line.split('|').collect();
             match fields.first().copied() {
                 Some("M") => {
-                    require_field_count(&fields, 3, "matter reservoir")?;
+                    if !matches!(fields.len(), 3 | 9) {
+                        return Err(ObjectError(format!(
+                            "matter-reservoir record has {} fields; expected 3 or 9",
+                            fields.len()
+                        )));
+                    }
                     registry.gas_reservoir_solar_masses =
                         parse_float_bits(fields[1], "gas reservoir mass")?;
                     registry.formation_sequence = parse_number(fields[2], "formation sequence")?;
+                    if fields.len() == 9 {
+                        registry.gas_composition = GasComposition::new(
+                            parse_float_bits(fields[3], "hydrogen fraction")?,
+                            parse_float_bits(fields[4], "helium fraction")?,
+                            parse_float_bits(fields[5], "carbon fraction")?,
+                            parse_float_bits(fields[6], "oxygen fraction")?,
+                            parse_float_bits(fields[7], "iron fraction")?,
+                            parse_float_bits(fields[8], "other-metals fraction")?,
+                        )
+                        .map_err(|error| ObjectError(error.to_string()))?;
+                    }
                     if !registry.gas_reservoir_solar_masses.is_finite()
                         || registry.gas_reservoir_solar_masses < 0.0
                     {
@@ -3136,6 +3175,7 @@ mod tests {
         let mut objects = ObjectRegistry::generate(42, config).unwrap();
         let initial_systems = objects.counts().star_systems;
         let initial_gas = objects.gas_reservoir_solar_masses();
+        let initial_composition = objects.gas_composition();
         let ten_myr = SimDuration::from_years(10_000_000).unwrap();
         let events = objects
             .form_stars_between(
@@ -3153,6 +3193,7 @@ mod tests {
         );
         assert_eq!(objects.counts().star_systems, initial_systems + 1);
         assert!(objects.gas_reservoir_solar_masses() < initial_gas);
+        assert_eq!(objects.gas_composition(), initial_composition);
         assert_eq!(
             objects.star(events[0].star_id).unwrap().formed_at(),
             ten_myr
@@ -3163,6 +3204,28 @@ mod tests {
             ObjectRegistry::decode(encoded.lines().skip(1)).unwrap(),
             objects
         );
+    }
+
+    #[test]
+    fn galaxy_morphology_sets_the_initial_gas_metallicity() {
+        let expected = [
+            (GalaxyMorphology::Spiral, 0.014),
+            (GalaxyMorphology::Elliptical, 0.020),
+            (GalaxyMorphology::Irregular, 0.006),
+            (GalaxyMorphology::Dwarf, 0.002),
+        ];
+        let mut config = GenerationConfig::DEFAULT;
+        config.star_systems = 1;
+        for (index, (morphology, metallicity)) in expected.into_iter().enumerate() {
+            let galaxy = GalaxyCatalogEntry {
+                id: GalaxyId::new(index as u64 + 1),
+                position: Position::default(),
+                morphology,
+                radius_parsecs: config.galaxy_radius_parsecs,
+            };
+            let objects = ObjectRegistry::generate_in_galaxy(index as u64, config, galaxy).unwrap();
+            assert!((objects.gas_composition().metallicity() - metallicity).abs() < 1.0e-12);
+        }
     }
 
     #[test]

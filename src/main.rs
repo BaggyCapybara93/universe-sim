@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use universe_sim::{
-    GalaxyId, MAX_CONCURRENT_GALAXIES, ObjectId, ObjectRef, RegionCoord, SimDuration,
-    SimulationConfig, TickDuration, Universe,
+    GalaxyId, GasComposition, MAX_CONCURRENT_GALAXIES, ObjectId, ObjectRef, RegionCoord,
+    SimDuration, SimulationConfig, TickDuration, Universe,
 };
 
 #[derive(Debug, Parser)]
@@ -271,6 +271,7 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
         "  Star-forming gas: {:.3} solar masses",
         universe.objects().gas_reservoir_solar_masses()
     );
+    print_gas_composition(universe.objects().gas_composition());
     println!("  Total bodies: {}", counts.stars + counts.planets);
     println!(
         "  Total objects: {}",
@@ -460,6 +461,7 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
         "  Star-forming gas: {:.3} solar masses",
         universe.objects().gas_reservoir_solar_masses()
     );
+    print_gas_composition(universe.objects().gas_composition());
     println!("  Recorded events: {}", universe.events().len());
     println!("  Known regions: {}", universe.galaxy_regions().count());
     Ok(())
@@ -490,6 +492,11 @@ fn materialize(args: MaterializeArgs, diagnostics: &Diagnostics) -> Result<(), C
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
+    println!(
+        "  Star-forming gas: {:.3} solar masses",
+        objects.gas_reservoir_solar_masses()
+    );
+    print_gas_composition(objects.gas_composition());
     if let Some(star) = objects.stars().next() {
         println!("  Example star: {}", star.id());
     }
@@ -668,6 +675,18 @@ fn parse_tick_duration(value: &str) -> Result<TickDuration, String> {
     value
         .parse::<TickDuration>()
         .map_err(|error| error.to_string())
+}
+
+fn print_gas_composition(composition: GasComposition) {
+    println!(
+        "  Gas composition: H {:.3}%, He {:.3}%, C {:.4}%, O {:.4}%, Fe {:.4}%, other metals {:.4}%",
+        composition.hydrogen_fraction() * 100.0,
+        composition.helium_fraction() * 100.0,
+        composition.carbon_fraction() * 100.0,
+        composition.oxygen_fraction() * 100.0,
+        composition.iron_fraction() * 100.0,
+        composition.other_metals_fraction() * 100.0,
+    );
 }
 
 fn parse_galaxies_at_once(value: &str) -> Result<NonZeroUsize, String> {

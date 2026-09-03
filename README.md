@@ -156,7 +156,7 @@ cargo test
 - The configuration reader supports the settings demonstrated in
   `cosmos.toml`. It is deliberately not a complete TOML implementation.
 - State files carry explicit format, simulation, generation, and RNG versions.
-  The earlier clock-only version 1 and object versions 2 through 8 are migrated;
+  The earlier clock-only version 1 and object versions 2 through 9 are migrated;
   unknown versions are rejected rather than silently misinterpreted.
 - Galactic populations use disk, bulge, and halo spatial/velocity profiles,
   correlated age and metallicity, a broken-power-law stellar mass function,
@@ -187,6 +187,8 @@ cargo test
   triggering event, persisted as planet status, and stop destroyed or unbound
   planets from being propagated as stable Kepler orbits.
 - Every generated region contains a finite persisted star-forming gas reservoir.
+  Its normalized hydrogen, helium, carbon, oxygen, iron, and other-metal mass
+  fractions vary with galaxy morphology and survive save/load cycles.
   At deterministic collapse intervals, gas is consumed with a fixed formation
   efficiency to create new systems whose stars begin as age-zero protostars.
 - Evolved stars in binaries are checked against their periastron Roche lobes.

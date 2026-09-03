@@ -64,6 +64,7 @@ fn creates_advances_and_inspects_generated_objects() {
     ]);
     assert!(created.status.success(), "{}", text(&created.stderr));
     assert!(text(&created.stdout).contains("Star systems: 7"));
+    assert!(text(&created.stdout).contains("Gas composition: H"));
     assert!(text(&created.stdout).contains("Total bodies:"));
     assert!(text(&created.stderr).contains("event=state_saved"));
     assert!(text(&created.stderr).contains("threads=2"));
@@ -197,7 +198,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=9", "state_format_version=99");
+        .replace("state_format_version=10", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

@@ -1,5 +1,6 @@
 //! Dependency-free foundations for a deterministic astrophysical simulator.
 
+pub mod chemistry;
 pub mod config;
 pub mod events;
 pub mod id;
@@ -11,6 +12,7 @@ pub mod simulation;
 pub mod time;
 pub mod units;
 
+pub use chemistry::{CompositionError, GasComposition};
 pub use config::{GenerationConfig, SimulationConfig};
 pub use events::{AstroEvent, AstroEventKind};
 pub use id::{GalaxyId, PlanetId, StarId, StarSystemId, UniverseId};
