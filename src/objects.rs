@@ -522,6 +522,52 @@ pub enum PlanetStatus {
     Destroyed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanetAtmosphere {
+    None,
+    Thin,
+    NitrogenRich,
+    CarbonDioxideRich,
+    HydrogenHelium,
+}
+
+impl fmt::Display for PlanetAtmosphere {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::None => "None",
+            Self::Thin => "Thin",
+            Self::NitrogenRich => "Nitrogen-rich",
+            Self::CarbonDioxideRich => "Carbon-dioxide-rich",
+            Self::HydrogenHelium => "Hydrogen-helium",
+        })
+    }
+}
+
+impl PlanetAtmosphere {
+    fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Thin => "thin",
+            Self::NitrogenRich => "nitrogen_rich",
+            Self::CarbonDioxideRich => "carbon_dioxide_rich",
+            Self::HydrogenHelium => "hydrogen_helium",
+        }
+    }
+
+    fn parse_code(value: &str) -> Result<Self, ObjectError> {
+        match value {
+            "none" => Ok(Self::None),
+            "thin" => Ok(Self::Thin),
+            "nitrogen_rich" => Ok(Self::NitrogenRich),
+            "carbon_dioxide_rich" => Ok(Self::CarbonDioxideRich),
+            "hydrogen_helium" => Ok(Self::HydrogenHelium),
+            _ => Err(ObjectError(format!(
+                "unknown planetary atmosphere '{value}'"
+            ))),
+        }
+    }
+}
+
 impl fmt::Display for PlanetStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -560,6 +606,9 @@ pub struct Planet {
     system_id: StarSystemId,
     star_id: StarId,
     mass: Mass,
+    radius: Length,
+    atmosphere: PlanetAtmosphere,
+    equilibrium_temperature: Temperature,
     orbital_radius: Length,
     position: Position,
     velocity: Velocity,
@@ -582,6 +631,26 @@ impl Planet {
 
     pub const fn mass(&self) -> Mass {
         self.mass
+    }
+
+    pub const fn radius(&self) -> Length {
+        self.radius
+    }
+
+    pub const fn atmosphere(&self) -> PlanetAtmosphere {
+        self.atmosphere
+    }
+
+    pub const fn equilibrium_temperature(&self) -> Temperature {
+        self.equilibrium_temperature
+    }
+
+    pub fn is_potentially_habitable(&self) -> bool {
+        matches!(
+            self.atmosphere,
+            PlanetAtmosphere::NitrogenRich | PlanetAtmosphere::CarbonDioxideRich
+        ) && (240.0..=330.0).contains(&self.equilibrium_temperature.kelvin())
+            && matches!(self.status, PlanetStatus::Stable | PlanetStatus::Irradiated)
     }
 
     pub const fn orbital_radius(&self) -> Length {
@@ -611,6 +680,7 @@ pub struct Moon {
     planet_id: PlanetId,
     system_id: StarSystemId,
     mass: Mass,
+    radius: Length,
     orbital_radius: Length,
     position: Position,
     velocity: Velocity,
@@ -629,6 +699,10 @@ impl Moon {
     }
     pub const fn mass(&self) -> Mass {
         self.mass
+    }
+
+    pub const fn radius(&self) -> Length {
+        self.radius
     }
     pub const fn orbital_radius(&self) -> Length {
         self.orbital_radius
@@ -1572,7 +1646,30 @@ impl ObjectRegistry {
                 ))
                 .ok_or(TimeError::Overflow)?;
         }
+        self.refresh_planet_temperatures()?;
         Ok(transitions)
+    }
+
+    fn refresh_planet_temperatures(&mut self) -> Result<(), TimeError> {
+        let mut updates = Vec::new();
+        for planet in self.planets.values() {
+            let Some(star) = self.stars.get(&planet.star_id) else {
+                continue;
+            };
+            let temperature = Temperature::from_kelvin(equilibrium_temperature_kelvin(
+                star.luminosity,
+                planet.orbital_radius.astronomical_units(),
+            ))
+            .map_err(|_| TimeError::Overflow)?;
+            updates.push((planet.id, temperature));
+        }
+        for (planet_id, temperature) in updates {
+            self.planets
+                .get_mut(&planet_id)
+                .expect("refreshed planet exists")
+                .equilibrium_temperature = temperature;
+        }
+        Ok(())
     }
 
     fn apply_direct_planet_collisions(
@@ -2273,7 +2370,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = planet.velocity.meters_per_second();
             writeln!(
                 output,
-                "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 planet.id.value(),
                 planet.system_id.value(),
                 planet.star_id.value(),
@@ -2298,6 +2395,9 @@ impl ObjectRegistry {
                 float_bits(planet.orbital_elements.mean_anomaly_at_epoch().radians()),
                 planet.orbital_elements.epoch().seconds(),
                 planet.status.code(),
+                float_bits(planet.radius.meters()),
+                float_bits(planet.equilibrium_temperature.kelvin()),
+                planet.atmosphere.code(),
             )
             .expect("writing to a String cannot fail");
         }
@@ -2306,11 +2406,12 @@ impl ObjectRegistry {
             let [vx, vy, vz] = moon.velocity.meters_per_second();
             writeln!(
                 output,
-                "N|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "N|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 moon.id.value(),
                 moon.planet_id.value(),
                 moon.system_id.value(),
                 float_bits(moon.mass.kilograms()),
+                float_bits(moon.radius.meters()),
                 float_bits(moon.orbital_radius.meters()),
                 float_bits(px),
                 float_bits(py),
@@ -2546,9 +2647,9 @@ impl ObjectRegistry {
                     insert_unique(&mut registry.stars, star.id, star, "star")?;
                 }
                 Some("P") => {
-                    if !matches!(fields.len(), 12 | 19 | 20) {
+                    if !matches!(fields.len(), 12 | 19 | 20 | 23) {
                         return Err(ObjectError(format!(
-                            "planet record has {} fields; expected 12, 19, or 20",
+                            "planet record has {} fields; expected 12, 19, 20, or 23",
                             fields.len()
                         )));
                     }
@@ -2578,16 +2679,36 @@ impl ObjectRegistry {
                             SimDuration::ZERO,
                         )?
                     };
+                    let mass = Mass::from_kilograms(parse_float_bits(fields[4], "planet mass")?)?;
+                    let atmosphere = if fields.len() == 23 {
+                        PlanetAtmosphere::parse_code(fields[22])?
+                    } else {
+                        PlanetAtmosphere::Thin
+                    };
                     let planet = Planet {
                         id: PlanetId::new(parse_number(fields[1], "planet ID")?),
                         system_id: StarSystemId::new(parse_number(fields[2], "system ID")?),
                         star_id: StarId::new(parse_number(fields[3], "star ID")?),
-                        mass: Mass::from_kilograms(parse_float_bits(fields[4], "planet mass")?)?,
+                        mass,
+                        radius: if fields.len() == 23 {
+                            Length::from_meters(parse_float_bits(fields[20], "planet radius")?)?
+                        } else {
+                            Length::from_meters(planet_radius_meters(mass, atmosphere))?
+                        },
+                        atmosphere,
+                        equilibrium_temperature: if fields.len() == 23 {
+                            Temperature::from_kelvin(parse_float_bits(
+                                fields[21],
+                                "planet equilibrium temperature",
+                            )?)?
+                        } else {
+                            Temperature::from_kelvin(288.0)?
+                        },
                         orbital_radius,
                         position: parse_position(&fields[6..9])?,
                         velocity: parse_velocity(&fields[9..12])?,
                         orbital_elements,
-                        status: if fields.len() == 20 {
+                        status: if fields.len() == 20 || fields.len() == 23 {
                             PlanetStatus::parse_code(fields[19])?
                         } else {
                             PlanetStatus::Stable
@@ -2596,29 +2717,62 @@ impl ObjectRegistry {
                     insert_unique(&mut registry.planets, planet.id, planet, "planet")?;
                 }
                 Some("N") => {
-                    require_field_count(&fields, 19, "moon")?;
-                    let orbital_radius =
-                        Length::from_meters(parse_float_bits(fields[5], "moon orbital radius")?)?;
+                    if !matches!(fields.len(), 19 | 20) {
+                        return Err(ObjectError(format!(
+                            "moon record has {} fields; expected 19 or 20",
+                            fields.len()
+                        )));
+                    }
+                    let has_radius = fields.len() == 20;
+                    let mass = Mass::from_kilograms(parse_float_bits(fields[4], "moon mass")?)?;
+                    let radius = if has_radius {
+                        Length::from_meters(parse_float_bits(fields[5], "moon radius")?)?
+                    } else {
+                        Length::from_meters(planet_radius_meters(mass, PlanetAtmosphere::None))?
+                    };
+                    let orbital_radius_index = if has_radius { 6 } else { 5 };
+                    let position_start = if has_radius { 7 } else { 6 };
+                    let orbit_start = if has_radius { 13 } else { 12 };
+                    let orbital_radius = Length::from_meters(parse_float_bits(
+                        fields[orbital_radius_index],
+                        "moon orbital radius",
+                    )?)?;
                     let orbital_elements = OrbitalElements::new(
-                        Length::from_meters(parse_float_bits(fields[12], "moon semi-major axis")?)?,
-                        parse_float_bits(fields[13], "moon eccentricity")?,
-                        Angle::from_radians(parse_float_bits(fields[14], "moon inclination")?)?,
-                        Angle::from_radians(parse_float_bits(fields[15], "moon ascending node")?)?,
+                        Length::from_meters(parse_float_bits(
+                            fields[orbit_start],
+                            "moon semi-major axis",
+                        )?)?,
+                        parse_float_bits(fields[orbit_start + 1], "moon eccentricity")?,
                         Angle::from_radians(parse_float_bits(
-                            fields[16],
+                            fields[orbit_start + 2],
+                            "moon inclination",
+                        )?)?,
+                        Angle::from_radians(parse_float_bits(
+                            fields[orbit_start + 3],
+                            "moon ascending node",
+                        )?)?,
+                        Angle::from_radians(parse_float_bits(
+                            fields[orbit_start + 4],
                             "moon periapsis argument",
                         )?)?,
-                        Angle::from_radians(parse_float_bits(fields[17], "moon mean anomaly")?)?,
-                        SimDuration::from_seconds(parse_number(fields[18], "moon orbit epoch")?),
+                        Angle::from_radians(parse_float_bits(
+                            fields[orbit_start + 5],
+                            "moon mean anomaly",
+                        )?)?,
+                        SimDuration::from_seconds(parse_number(
+                            fields[orbit_start + 6],
+                            "moon orbit epoch",
+                        )?),
                     )?;
                     let moon = Moon {
                         id: MoonId::new(parse_number(fields[1], "moon ID")?),
                         planet_id: PlanetId::new(parse_number(fields[2], "moon planet ID")?),
                         system_id: StarSystemId::new(parse_number(fields[3], "moon system ID")?),
-                        mass: Mass::from_kilograms(parse_float_bits(fields[4], "moon mass")?)?,
+                        mass,
+                        radius,
                         orbital_radius,
-                        position: parse_position(&fields[6..9])?,
-                        velocity: parse_velocity(&fields[9..12])?,
+                        position: parse_position(&fields[position_start..position_start + 3])?,
+                        velocity: parse_velocity(&fields[position_start + 3..position_start + 6])?,
                         orbital_elements,
                     };
                     insert_unique(&mut registry.moons, moon.id, moon, "moon")?;
@@ -2752,6 +2906,7 @@ fn generate_system(
     primary.velocity = velocity;
     let primary_mass = primary.initial_mass;
     let current_primary_mass = primary.current_mass;
+    let current_primary_luminosity = primary.luminosity;
     let primary_stage = primary.stage;
     let mut stars = vec![primary];
 
@@ -2835,6 +2990,7 @@ fn generate_system(
             position,
             velocity,
             current_primary_mass,
+            current_primary_luminosity,
             orbit_au,
             population.metallicity,
             config,
@@ -3479,6 +3635,7 @@ fn generate_planet(
     planet_position: Position,
     planet_velocity: Velocity,
     star_mass: Mass,
+    star_luminosity: Luminosity,
     orbit_au: f64,
     metallicity: f64,
     config: GenerationConfig,
@@ -3492,6 +3649,13 @@ fn generate_planet(
         .mul_add(metal_mass_bias.sqrt(), 0.0)
         .clamp(config.planet_mass_earth_min, config.planet_mass_earth_max);
     let orbital_radius = Length::from_astronomical_units(orbit_au)?;
+    let atmosphere = generate_planet_atmosphere(&mut rng, mass_earth, metallicity);
+    let radius = Length::from_meters(planet_radius_meters(
+        Mass::from_earth_masses(mass_earth)?,
+        atmosphere,
+    ))?;
+    let equilibrium_temperature =
+        Temperature::from_kelvin(equilibrium_temperature_kelvin(star_luminosity, orbit_au))?;
     let orbital_elements = OrbitalElements::new(
         orbital_radius,
         0.25 * rng.next_f64().powi(2),
@@ -3513,6 +3677,9 @@ fn generate_planet(
         system_id,
         star_id,
         mass: Mass::from_earth_masses(mass_earth)?,
+        radius,
+        atmosphere,
+        equilibrium_temperature,
         orbital_radius,
         position,
         velocity,
@@ -3552,7 +3719,7 @@ fn generate_moon(
     planet_orbit_au: f64,
     rng: &mut StableRng,
 ) -> Result<Option<Moon>, ObjectError> {
-    let planet_radius = planet_radius_meters(planet_mass);
+    let planet_radius = planet_radius_meters(planet_mass, PlanetAtmosphere::None);
     let hill_radius = planet_orbit_au
         * METERS_PER_ASTRONOMICAL_UNIT
         * (planet_mass.kilograms() / (3.0 * star_mass.kilograms())).cbrt();
@@ -3573,10 +3740,10 @@ fn generate_moon(
         Angle::from_radians(std::f64::consts::TAU * rng.next_f64())?,
         SimDuration::ZERO,
     )?;
-    let planet_mass = Mass::from_earth_masses(mass_earth)?;
+    let moon_mass = Mass::from_earth_masses(mass_earth)?;
     let (position, velocity) = propagate_kepler(
         orbital_elements,
-        planet_mass,
+        moon_mass,
         SimDuration::ZERO,
         planet_position,
         planet_velocity,
@@ -3585,7 +3752,8 @@ fn generate_moon(
         id,
         planet_id,
         system_id,
-        mass: planet_mass,
+        mass: moon_mass,
+        radius: Length::from_meters(planet_radius_meters(moon_mass, PlanetAtmosphere::None))?,
         orbital_radius: Length::from_meters(axis)?,
         position,
         velocity,
@@ -3649,8 +3817,36 @@ fn generate_debris_disk(
     })
 }
 
-fn planet_radius_meters(mass: Mass) -> f64 {
-    6.371e6 * mass.earth_masses().max(0.000001).powf(0.27)
+fn generate_planet_atmosphere(
+    rng: &mut StableRng,
+    mass_earth: f64,
+    metallicity: f64,
+) -> PlanetAtmosphere {
+    if mass_earth < 0.01 {
+        PlanetAtmosphere::None
+    } else if mass_earth >= 15.0 {
+        PlanetAtmosphere::HydrogenHelium
+    } else if mass_earth < 0.1 || rng.next_f64() > (0.45 + metallicity * 4.0).clamp(0.45, 0.90) {
+        PlanetAtmosphere::Thin
+    } else if rng.next_f64() < 0.70 {
+        PlanetAtmosphere::NitrogenRich
+    } else {
+        PlanetAtmosphere::CarbonDioxideRich
+    }
+}
+
+fn planet_radius_meters(mass: Mass, atmosphere: PlanetAtmosphere) -> f64 {
+    let mass_earth = mass.earth_masses().max(0.000001);
+    if atmosphere == PlanetAtmosphere::HydrogenHelium {
+        11.2e6 * (mass_earth / 318.0).powf(0.01).clamp(0.75, 1.15)
+    } else {
+        6.371e6 * mass_earth.powf(0.27)
+    }
+}
+
+fn equilibrium_temperature_kelvin(luminosity: Luminosity, orbit_au: f64) -> f64 {
+    let luminosity_solar = luminosity.solar_luminosities().max(0.0);
+    (278.5 * luminosity_solar.powf(0.25) / orbit_au.max(0.001).sqrt()).clamp(2.7, 10_000.0)
 }
 
 fn validate_small_body_population(
@@ -3952,9 +4148,13 @@ mod tests {
         assert!(counts.asteroid_belts > 0);
         assert!(counts.comet_clouds > 0);
         assert!(counts.debris_disks > 0);
+        assert!(objects.planets().all(|planet| {
+            planet.radius().meters() > 0.0 && planet.equilibrium_temperature().kelvin() > 0.0
+        }));
         for moon in objects.moons() {
             let planet = objects.planet(moon.planet_id()).unwrap();
             assert_eq!(planet.system_id(), moon.system_id());
+            assert!(moon.radius().meters() > 0.0);
             assert!(moon.orbital_radius().meters() > 0.0);
             assert!(
                 objects

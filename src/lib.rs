@@ -22,8 +22,8 @@ pub use id::{
 pub use objects::{
     AsteroidBelt, CometCloud, DebrisDisk, DynamicsMode, Galaxy, GalaxyCatalogEntry,
     GalaxyMorphology, Moon, ObjectCounts, ObjectId, ObjectRef, ObjectRegistry, Planet,
-    PlanetImpact, PlanetImpactKind, PlanetStatus, Star, StarSystem, StellarInteractionKind,
-    StellarStage,
+    PlanetAtmosphere, PlanetImpact, PlanetImpactKind, PlanetStatus, Star, StarSystem,
+    StellarInteractionKind, StellarStage,
 };
 pub use orbital::{GravityBody, OrbitalElements, leapfrog_step, propagate_kepler};
 pub use region::{GalaxyRegion, MaterializedRegion, RegionCoord};

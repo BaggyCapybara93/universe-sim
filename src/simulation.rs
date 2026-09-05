@@ -22,9 +22,9 @@ use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
 
-pub const STATE_FORMAT_VERSION: u32 = 11;
+pub const STATE_FORMAT_VERSION: u32 = 12;
 pub const SIMULATION_VERSION: u32 = 1;
-pub const GENERATION_VERSION: u32 = 8;
+pub const GENERATION_VERSION: u32 = 9;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -501,8 +501,10 @@ impl Universe {
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 11 {
+            if state_format_version >= 12 {
                 GENERATION_VERSION
+            } else if state_format_version >= 11 {
+                8
             } else if state_format_version >= 10 {
                 7
             } else if state_format_version >= 9 {
@@ -1562,8 +1564,8 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=11", "state_format_version=2")
-                        .replace("generation_version=8", "generation_version=1"),
+                    line.replace("state_format_version=12", "state_format_version=2")
+                        .replace("generation_version=9", "generation_version=1"),
                 );
             }
         }
@@ -1594,16 +1596,16 @@ mod tests {
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=11", "state_format_version=6")
-                        .replace("generation_version=8", "generation_version=3")
+                    line.replace("state_format_version=12", "state_format_version=6")
+                        .replace("generation_version=9", "generation_version=3")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=11"));
-        assert!(upgraded.contains("generation_version=8"));
+        assert!(upgraded.contains("state_format_version=12"));
+        assert!(upgraded.contains("generation_version=9"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

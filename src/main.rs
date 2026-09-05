@@ -663,6 +663,16 @@ fn print_object(object: ObjectRef<'_>) {
             println!("  System: {}", planet.system_id());
             println!("  Star: {}", planet.star_id());
             println!("  Mass: {:.6} Earth masses", planet.mass().earth_masses());
+            println!("  Radius: {:.3} km", planet.radius().meters() / 1_000.0);
+            println!("  Atmosphere: {}", planet.atmosphere());
+            println!(
+                "  Equilibrium temperature: {:.2} K",
+                planet.equilibrium_temperature().kelvin()
+            );
+            println!(
+                "  Potentially habitable: {}",
+                planet.is_potentially_habitable()
+            );
             println!("  Status: {}", planet.status());
             println!(
                 "  Orbital radius: {:.6} AU",
@@ -690,6 +700,7 @@ fn print_object(object: ObjectRef<'_>) {
             println!("  System: {}", moon.system_id());
             println!("  Planet: {}", moon.planet_id());
             println!("  Mass: {:.6} Earth masses", moon.mass().earth_masses());
+            println!("  Radius: {:.3} km", moon.radius().meters() / 1_000.0);
             println!(
                 "  Orbital radius: {:.6} km",
                 moon.orbital_radius().meters() / 1_000.0

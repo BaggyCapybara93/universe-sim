@@ -208,3 +208,7 @@ cargo test
   aggregate asteroid belts, comet clouds, and debris disks with radial ranges,
   estimated populations, and total masses. Small-body aggregates are currently
   descriptive populations rather than individually integrated bodies.
+- Planets include deterministic radius, broad atmosphere classification,
+  equilibrium temperature, and a deliberately conservative potential-
+  habitability heuristic. Planet temperatures are refreshed when stellar
+  luminosity changes; this is not yet a climate or atmospheric-escape solver.
