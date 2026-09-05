@@ -15,11 +15,15 @@ pub mod units;
 pub use chemistry::{CompositionError, GasComposition};
 pub use config::{GenerationConfig, SimulationConfig};
 pub use events::{AstroEvent, AstroEventKind};
-pub use id::{GalaxyId, PlanetId, StarId, StarSystemId, UniverseId};
+pub use id::{
+    AsteroidBeltId, CometCloudId, DebrisDiskId, GalaxyId, MoonId, PlanetId, StarId, StarSystemId,
+    UniverseId,
+};
 pub use objects::{
-    DynamicsMode, Galaxy, GalaxyCatalogEntry, GalaxyMorphology, ObjectCounts, ObjectId, ObjectRef,
-    ObjectRegistry, Planet, PlanetImpact, PlanetImpactKind, PlanetStatus, Star, StarSystem,
-    StellarInteractionKind, StellarStage,
+    AsteroidBelt, CometCloud, DebrisDisk, DynamicsMode, Galaxy, GalaxyCatalogEntry,
+    GalaxyMorphology, Moon, ObjectCounts, ObjectId, ObjectRef, ObjectRegistry, Planet,
+    PlanetImpact, PlanetImpactKind, PlanetStatus, Star, StarSystem, StellarInteractionKind,
+    StellarStage,
 };
 pub use orbital::{GravityBody, OrbitalElements, leapfrog_step, propagate_kepler};
 pub use region::{GalaxyRegion, MaterializedRegion, RegionCoord};

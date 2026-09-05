@@ -9,7 +9,10 @@ use rayon::prelude::*;
 
 use crate::chemistry::GasComposition;
 use crate::config::GenerationConfig;
-use crate::id::{GalaxyId, IdParseError, PlanetId, StarId, StarSystemId};
+use crate::id::{
+    AsteroidBeltId, CometCloudId, DebrisDiskId, GalaxyId, IdParseError, MoonId, PlanetId, StarId,
+    StarSystemId,
+};
 use crate::orbital::{
     GRAVITATIONAL_CONSTANT, GravityBody, OrbitalElements, OrbitalError, leapfrog_step,
     propagate_kepler,
@@ -150,6 +153,10 @@ pub struct StarSystem {
     star_id: StarId,
     companion_star_ids: Vec<StarId>,
     planet_ids: Vec<PlanetId>,
+    moon_ids: Vec<MoonId>,
+    asteroid_belt_ids: Vec<AsteroidBeltId>,
+    comet_cloud_ids: Vec<CometCloudId>,
+    debris_disk_ids: Vec<DebrisDiskId>,
     component: GalacticComponent,
 }
 
@@ -180,6 +187,22 @@ impl StarSystem {
 
     pub fn planet_ids(&self) -> &[PlanetId] {
         &self.planet_ids
+    }
+
+    pub fn moon_ids(&self) -> &[MoonId] {
+        &self.moon_ids
+    }
+
+    pub fn asteroid_belt_ids(&self) -> &[AsteroidBeltId] {
+        &self.asteroid_belt_ids
+    }
+
+    pub fn comet_cloud_ids(&self) -> &[CometCloudId] {
+        &self.comet_cloud_ids
+    }
+
+    pub fn debris_disk_ids(&self) -> &[DebrisDiskId] {
+        &self.debris_disk_ids
     }
 
     pub const fn component(&self) -> GalacticComponent {
@@ -582,12 +605,148 @@ impl Planet {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moon {
+    id: MoonId,
+    planet_id: PlanetId,
+    system_id: StarSystemId,
+    mass: Mass,
+    orbital_radius: Length,
+    position: Position,
+    velocity: Velocity,
+    orbital_elements: OrbitalElements,
+}
+
+impl Moon {
+    pub const fn id(&self) -> MoonId {
+        self.id
+    }
+    pub const fn planet_id(&self) -> PlanetId {
+        self.planet_id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn mass(&self) -> Mass {
+        self.mass
+    }
+    pub const fn orbital_radius(&self) -> Length {
+        self.orbital_radius
+    }
+    pub const fn position(&self) -> Position {
+        self.position
+    }
+    pub const fn velocity(&self) -> Velocity {
+        self.velocity
+    }
+    pub const fn orbital_elements(&self) -> OrbitalElements {
+        self.orbital_elements
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsteroidBelt {
+    id: AsteroidBeltId,
+    system_id: StarSystemId,
+    inner_radius: Length,
+    outer_radius: Length,
+    estimated_body_count: u64,
+    total_mass: Mass,
+}
+
+impl AsteroidBelt {
+    pub const fn id(&self) -> AsteroidBeltId {
+        self.id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn inner_radius(&self) -> Length {
+        self.inner_radius
+    }
+    pub const fn outer_radius(&self) -> Length {
+        self.outer_radius
+    }
+    pub const fn estimated_body_count(&self) -> u64 {
+        self.estimated_body_count
+    }
+    pub const fn total_mass(&self) -> Mass {
+        self.total_mass
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CometCloud {
+    id: CometCloudId,
+    system_id: StarSystemId,
+    inner_radius: Length,
+    outer_radius: Length,
+    estimated_body_count: u64,
+    total_mass: Mass,
+}
+
+impl CometCloud {
+    pub const fn id(&self) -> CometCloudId {
+        self.id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn inner_radius(&self) -> Length {
+        self.inner_radius
+    }
+    pub const fn outer_radius(&self) -> Length {
+        self.outer_radius
+    }
+    pub const fn estimated_body_count(&self) -> u64 {
+        self.estimated_body_count
+    }
+    pub const fn total_mass(&self) -> Mass {
+        self.total_mass
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebrisDisk {
+    id: DebrisDiskId,
+    system_id: StarSystemId,
+    inner_radius: Length,
+    outer_radius: Length,
+    estimated_body_count: u64,
+    total_mass: Mass,
+}
+
+impl DebrisDisk {
+    pub const fn id(&self) -> DebrisDiskId {
+        self.id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn inner_radius(&self) -> Length {
+        self.inner_radius
+    }
+    pub const fn outer_radius(&self) -> Length {
+        self.outer_radius
+    }
+    pub const fn estimated_body_count(&self) -> u64 {
+        self.estimated_body_count
+    }
+    pub const fn total_mass(&self) -> Mass {
+        self.total_mass
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectCounts {
     pub galaxies: usize,
     pub star_systems: usize,
     pub stars: usize,
     pub planets: usize,
+    pub moons: usize,
+    pub asteroid_belts: usize,
+    pub comet_clouds: usize,
+    pub debris_disks: usize,
     pub gas_reservoirs: usize,
 }
 
@@ -597,6 +756,10 @@ pub enum ObjectId {
     StarSystem(StarSystemId),
     Star(StarId),
     Planet(PlanetId),
+    Moon(MoonId),
+    AsteroidBelt(AsteroidBeltId),
+    CometCloud(CometCloudId),
+    DebrisDisk(DebrisDiskId),
 }
 
 impl fmt::Display for ObjectId {
@@ -606,6 +769,10 @@ impl fmt::Display for ObjectId {
             Self::StarSystem(id) => id.fmt(formatter),
             Self::Star(id) => id.fmt(formatter),
             Self::Planet(id) => id.fmt(formatter),
+            Self::Moon(id) => id.fmt(formatter),
+            Self::AsteroidBelt(id) => id.fmt(formatter),
+            Self::CometCloud(id) => id.fmt(formatter),
+            Self::DebrisDisk(id) => id.fmt(formatter),
         }
     }
 }
@@ -634,6 +801,26 @@ impl FromStr for ObjectId {
                 .parse()
                 .map(Self::Planet)
                 .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("M-") {
+            value
+                .parse()
+                .map(Self::Moon)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("AB-") {
+            value
+                .parse()
+                .map(Self::AsteroidBelt)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("CC-") {
+            value
+                .parse()
+                .map(Self::CometCloud)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("DD-") {
+            value
+                .parse()
+                .map(Self::DebrisDisk)
+                .map_err(ObjectIdParseError::Id)
         } else {
             Err(ObjectIdParseError::UnknownPrefix(value.to_owned()))
         }
@@ -651,7 +838,7 @@ impl fmt::Display for ObjectIdParseError {
         match self {
             Self::UnknownPrefix(value) => write!(
                 formatter,
-                "unknown object ID '{value}'; expected G-, SYS-, S-, or P-"
+                "unknown object ID '{value}'; expected G-, SYS-, S-, P-, M-, AB-, CC-, or DD-"
             ),
             Self::Id(error) => error.fmt(formatter),
         }
@@ -666,6 +853,10 @@ pub enum ObjectRef<'a> {
     StarSystem(&'a StarSystem),
     Star(&'a Star),
     Planet(&'a Planet),
+    Moon(&'a Moon),
+    AsteroidBelt(&'a AsteroidBelt),
+    CometCloud(&'a CometCloud),
+    DebrisDisk(&'a DebrisDisk),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -674,6 +865,10 @@ pub struct ObjectRegistry {
     star_systems: BTreeMap<StarSystemId, StarSystem>,
     stars: BTreeMap<StarId, Star>,
     planets: BTreeMap<PlanetId, Planet>,
+    moons: BTreeMap<MoonId, Moon>,
+    asteroid_belts: BTreeMap<AsteroidBeltId, AsteroidBelt>,
+    comet_clouds: BTreeMap<CometCloudId, CometCloud>,
+    debris_disks: BTreeMap<DebrisDiskId, DebrisDisk>,
     gas_reservoir_solar_masses: f64,
     gas_composition: GasComposition,
     formation_sequence: u64,
@@ -716,6 +911,18 @@ impl ObjectRegistry {
             for planet in generated.planets {
                 insert_unique(&mut registry.planets, planet.id, planet, "planet")?;
             }
+            for moon in generated.moons {
+                insert_unique(&mut registry.moons, moon.id, moon, "moon")?;
+            }
+            for belt in generated.asteroid_belts {
+                insert_unique(&mut registry.asteroid_belts, belt.id, belt, "asteroid belt")?;
+            }
+            for cloud in generated.comet_clouds {
+                insert_unique(&mut registry.comet_clouds, cloud.id, cloud, "comet cloud")?;
+            }
+            for disk in generated.debris_disks {
+                insert_unique(&mut registry.debris_disks, disk.id, disk, "debris disk")?;
+            }
             insert_unique(
                 &mut registry.star_systems,
                 system_id,
@@ -756,6 +963,10 @@ impl ObjectRegistry {
             star_systems: self.star_systems.len(),
             stars: self.stars.len(),
             planets: self.planets.len(),
+            moons: self.moons.len(),
+            asteroid_belts: self.asteroid_belts.len(),
+            comet_clouds: self.comet_clouds.len(),
+            debris_disks: self.debris_disks.len(),
             gas_reservoirs: usize::from(self.gas_reservoir_solar_masses > 0.0),
         }
     }
@@ -861,6 +1072,10 @@ impl ObjectRegistry {
                     star_id,
                     companion_star_ids: Vec::new(),
                     planet_ids: Vec::new(),
+                    moon_ids: Vec::new(),
+                    asteroid_belt_ids: Vec::new(),
+                    comet_cloud_ids: Vec::new(),
+                    debris_disk_ids: Vec::new(),
                     component: GalacticComponent::Disk,
                 },
             );
@@ -903,12 +1118,32 @@ impl ObjectRegistry {
         self.planets.get(&id)
     }
 
+    pub fn moon(&self, id: MoonId) -> Option<&Moon> {
+        self.moons.get(&id)
+    }
+
+    pub fn asteroid_belt(&self, id: AsteroidBeltId) -> Option<&AsteroidBelt> {
+        self.asteroid_belts.get(&id)
+    }
+
+    pub fn comet_cloud(&self, id: CometCloudId) -> Option<&CometCloud> {
+        self.comet_clouds.get(&id)
+    }
+
+    pub fn debris_disk(&self, id: DebrisDiskId) -> Option<&DebrisDisk> {
+        self.debris_disks.get(&id)
+    }
+
     pub fn find(&self, id: ObjectId) -> Option<ObjectRef<'_>> {
         match id {
             ObjectId::Galaxy(id) => self.galaxy(id).map(ObjectRef::Galaxy),
             ObjectId::StarSystem(id) => self.star_system(id).map(ObjectRef::StarSystem),
             ObjectId::Star(id) => self.star(id).map(ObjectRef::Star),
             ObjectId::Planet(id) => self.planet(id).map(ObjectRef::Planet),
+            ObjectId::Moon(id) => self.moon(id).map(ObjectRef::Moon),
+            ObjectId::AsteroidBelt(id) => self.asteroid_belt(id).map(ObjectRef::AsteroidBelt),
+            ObjectId::CometCloud(id) => self.comet_cloud(id).map(ObjectRef::CometCloud),
+            ObjectId::DebrisDisk(id) => self.debris_disk(id).map(ObjectRef::DebrisDisk),
         }
     }
 
@@ -926,6 +1161,22 @@ impl ObjectRegistry {
 
     pub fn planets(&self) -> impl Iterator<Item = &Planet> {
         self.planets.values()
+    }
+
+    pub fn moons(&self) -> impl Iterator<Item = &Moon> {
+        self.moons.values()
+    }
+
+    pub fn asteroid_belts(&self) -> impl Iterator<Item = &AsteroidBelt> {
+        self.asteroid_belts.values()
+    }
+
+    pub fn comet_clouds(&self) -> impl Iterator<Item = &CometCloud> {
+        self.comet_clouds.values()
+    }
+
+    pub fn debris_disks(&self) -> impl Iterator<Item = &DebrisDisk> {
+        self.debris_disks.values()
     }
 
     pub fn dynamics_mode(&self, system_id: StarSystemId) -> Option<DynamicsMode> {
@@ -1018,6 +1269,59 @@ impl ObjectRegistry {
                     )));
                 }
             }
+            ensure_unique(&system.moon_ids, "star-system moon relationship")?;
+            for moon_id in &system.moon_ids {
+                let moon = self.moons.get(moon_id).ok_or_else(|| {
+                    ObjectError(format!("{system_id} references missing {moon_id}"))
+                })?;
+                if moon.system_id != *system_id || !system.planet_ids.contains(&moon.planet_id) {
+                    return Err(ObjectError(format!(
+                        "{moon_id} has inconsistent parent relationships"
+                    )));
+                }
+            }
+            ensure_unique(
+                &system.asteroid_belt_ids,
+                "star-system asteroid-belt relationship",
+            )?;
+            ensure_unique(
+                &system.comet_cloud_ids,
+                "star-system comet-cloud relationship",
+            )?;
+            ensure_unique(
+                &system.debris_disk_ids,
+                "star-system debris-disk relationship",
+            )?;
+            for belt_id in &system.asteroid_belt_ids {
+                let belt = self.asteroid_belts.get(belt_id).ok_or_else(|| {
+                    ObjectError(format!("{system_id} references missing {belt_id}"))
+                })?;
+                if belt.system_id != *system_id {
+                    return Err(ObjectError(format!(
+                        "{belt_id} has an inconsistent parent relationship"
+                    )));
+                }
+            }
+            for cloud_id in &system.comet_cloud_ids {
+                let cloud = self.comet_clouds.get(cloud_id).ok_or_else(|| {
+                    ObjectError(format!("{system_id} references missing {cloud_id}"))
+                })?;
+                if cloud.system_id != *system_id {
+                    return Err(ObjectError(format!(
+                        "{cloud_id} has an inconsistent parent relationship"
+                    )));
+                }
+            }
+            for disk_id in &system.debris_disk_ids {
+                let disk = self.debris_disks.get(disk_id).ok_or_else(|| {
+                    ObjectError(format!("{system_id} references missing {disk_id}"))
+                })?;
+                if disk.system_id != *system_id {
+                    return Err(ObjectError(format!(
+                        "{disk_id} has an inconsistent parent relationship"
+                    )));
+                }
+            }
         }
 
         for (star_id, star) in &self.stars {
@@ -1058,6 +1362,108 @@ impl ObjectRegistry {
                     planet.system_id
                 )));
             }
+        }
+        for (moon_id, moon) in &self.moons {
+            if *moon_id != moon.id {
+                return Err(ObjectError(
+                    "moon registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&moon.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{moon_id} references missing system {}",
+                    moon.system_id
+                ))
+            })?;
+            let planet = self.planets.get(&moon.planet_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{moon_id} references missing planet {}",
+                    moon.planet_id
+                ))
+            })?;
+            if !system.moon_ids.contains(moon_id)
+                || planet.system_id != moon.system_id
+                || planet.star_id != system.star_id
+            {
+                return Err(ObjectError(format!(
+                    "{moon_id} has inconsistent child relationship"
+                )));
+            }
+        }
+        for (belt_id, belt) in &self.asteroid_belts {
+            if *belt_id != belt.id {
+                return Err(ObjectError(
+                    "asteroid-belt registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&belt.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{belt_id} references missing system {}",
+                    belt.system_id
+                ))
+            })?;
+            if !system.asteroid_belt_ids.contains(belt_id) {
+                return Err(ObjectError(format!(
+                    "{} does not list child {belt_id}",
+                    belt.system_id
+                )));
+            }
+            validate_small_body_population(
+                belt.inner_radius,
+                belt.outer_radius,
+                belt.estimated_body_count,
+                "asteroid belt",
+            )?;
+        }
+        for (cloud_id, cloud) in &self.comet_clouds {
+            if *cloud_id != cloud.id {
+                return Err(ObjectError(
+                    "comet-cloud registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&cloud.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{cloud_id} references missing system {}",
+                    cloud.system_id
+                ))
+            })?;
+            if !system.comet_cloud_ids.contains(cloud_id) {
+                return Err(ObjectError(format!(
+                    "{} does not list child {cloud_id}",
+                    cloud.system_id
+                )));
+            }
+            validate_small_body_population(
+                cloud.inner_radius,
+                cloud.outer_radius,
+                cloud.estimated_body_count,
+                "comet cloud",
+            )?;
+        }
+        for (disk_id, disk) in &self.debris_disks {
+            if *disk_id != disk.id {
+                return Err(ObjectError(
+                    "debris-disk registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&disk.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{disk_id} references missing system {}",
+                    disk.system_id
+                ))
+            })?;
+            if !system.debris_disk_ids.contains(disk_id) {
+                return Err(ObjectError(format!(
+                    "{} does not list child {disk_id}",
+                    disk.system_id
+                )));
+            }
+            validate_small_body_population(
+                disk.inner_radius,
+                disk.outer_radius,
+                disk.estimated_body_count,
+                "debris disk",
+            )?;
         }
         Ok(())
     }
@@ -1559,6 +1965,46 @@ impl ObjectRegistry {
             planet.position = position;
             planet.velocity = velocity;
         }
+        let moons: Vec<_> = self
+            .moons
+            .values()
+            .filter_map(|moon| {
+                let planet = self.planets.get(&moon.planet_id)?;
+                (!matches!(
+                    planet.status,
+                    PlanetStatus::Unbound | PlanetStatus::Destroyed
+                ))
+                .then_some((moon, planet.position, planet.velocity, planet.mass))
+            })
+            .collect();
+        let propagate_moon = |(moon, planet_position, planet_velocity, planet_mass): &(
+            &Moon,
+            Position,
+            Velocity,
+            Mass,
+        )| {
+            let (position, velocity) = propagate_kepler(
+                moon.orbital_elements,
+                *planet_mass,
+                elapsed,
+                *planet_position,
+                *planet_velocity,
+            )?;
+            Ok((moon.id, position, velocity))
+        };
+        let moon_updates: Result<Vec<_>, ObjectError> = if moons.len() >= PARALLEL_BODY_THRESHOLD {
+            moons.par_iter().map(propagate_moon).collect()
+        } else {
+            moons.iter().map(propagate_moon).collect()
+        };
+        for (moon_id, position, velocity) in moon_updates? {
+            let moon = self
+                .moons
+                .get_mut(&moon_id)
+                .expect("propagated moon exists");
+            moon.position = position;
+            moon.velocity = velocity;
+        }
         Ok(())
     }
 
@@ -1775,7 +2221,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = system.velocity.meters_per_second();
             writeln!(
                 output,
-                "Y|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "Y|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 system.id.value(),
                 system.galaxy_id.value(),
                 float_bits(px),
@@ -1788,6 +2234,10 @@ impl ObjectRegistry {
                 encode_ids(&system.planet_ids),
                 system.component.code(),
                 encode_ids(&system.companion_star_ids),
+                encode_ids(&system.moon_ids),
+                encode_ids(&system.asteroid_belt_ids),
+                encode_ids(&system.comet_cloud_ids),
+                encode_ids(&system.debris_disk_ids),
             )
             .expect("writing to a String cannot fail");
         }
@@ -1851,6 +2301,76 @@ impl ObjectRegistry {
             )
             .expect("writing to a String cannot fail");
         }
+        for moon in self.moons.values() {
+            let [px, py, pz] = moon.position.meters();
+            let [vx, vy, vz] = moon.velocity.meters_per_second();
+            writeln!(
+                output,
+                "N|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                moon.id.value(),
+                moon.planet_id.value(),
+                moon.system_id.value(),
+                float_bits(moon.mass.kilograms()),
+                float_bits(moon.orbital_radius.meters()),
+                float_bits(px),
+                float_bits(py),
+                float_bits(pz),
+                float_bits(vx),
+                float_bits(vy),
+                float_bits(vz),
+                float_bits(moon.orbital_elements.semi_major_axis().meters()),
+                float_bits(moon.orbital_elements.eccentricity()),
+                float_bits(moon.orbital_elements.inclination().radians()),
+                float_bits(
+                    moon.orbital_elements
+                        .longitude_of_ascending_node()
+                        .radians()
+                ),
+                float_bits(moon.orbital_elements.argument_of_periapsis().radians()),
+                float_bits(moon.orbital_elements.mean_anomaly_at_epoch().radians()),
+                moon.orbital_elements.epoch().seconds(),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        for belt in self.asteroid_belts.values() {
+            writeln!(
+                output,
+                "A|{}|{}|{}|{}|{}|{}",
+                belt.id.value(),
+                belt.system_id.value(),
+                float_bits(belt.inner_radius.meters()),
+                float_bits(belt.outer_radius.meters()),
+                belt.estimated_body_count,
+                float_bits(belt.total_mass.kilograms()),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        for cloud in self.comet_clouds.values() {
+            writeln!(
+                output,
+                "C|{}|{}|{}|{}|{}|{}",
+                cloud.id.value(),
+                cloud.system_id.value(),
+                float_bits(cloud.inner_radius.meters()),
+                float_bits(cloud.outer_radius.meters()),
+                cloud.estimated_body_count,
+                float_bits(cloud.total_mass.kilograms()),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        for disk in self.debris_disks.values() {
+            writeln!(
+                output,
+                "D|{}|{}|{}|{}|{}|{}",
+                disk.id.value(),
+                disk.system_id.value(),
+                float_bits(disk.inner_radius.meters()),
+                float_bits(disk.outer_radius.meters()),
+                disk.estimated_body_count,
+                float_bits(disk.total_mass.kilograms()),
+            )
+            .expect("writing to a String cannot fail");
+        }
     }
 
     pub(crate) fn decode<'a>(lines: impl Iterator<Item = &'a str>) -> Result<Self, ObjectError> {
@@ -1900,9 +2420,9 @@ impl ObjectRegistry {
                     insert_unique(&mut registry.galaxies, galaxy.id, galaxy, "galaxy")?;
                 }
                 Some("Y") => {
-                    if !matches!(fields.len(), 11..=13) {
+                    if !matches!(fields.len(), 11..=13 | 17) {
                         return Err(ObjectError(format!(
-                            "star-system record has {} fields; expected 11, 12, or 13",
+                            "star-system record has {} fields; expected 11, 12, 13, or 17",
                             fields.len()
                         )));
                     }
@@ -1918,8 +2438,28 @@ impl ObjectRegistry {
                         } else {
                             GalacticComponent::Disk
                         },
-                        companion_star_ids: if fields.len() == 13 {
+                        companion_star_ids: if fields.len() == 13 || fields.len() == 17 {
                             parse_ids(fields[12], StarId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        moon_ids: if fields.len() == 17 {
+                            parse_ids(fields[13], MoonId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        asteroid_belt_ids: if fields.len() == 17 {
+                            parse_ids(fields[14], AsteroidBeltId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        comet_cloud_ids: if fields.len() == 17 {
+                            parse_ids(fields[15], CometCloudId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        debris_disk_ids: if fields.len() == 17 {
+                            parse_ids(fields[16], DebrisDiskId::new)?
                         } else {
                             Vec::new()
                         },
@@ -2055,6 +2595,106 @@ impl ObjectRegistry {
                     };
                     insert_unique(&mut registry.planets, planet.id, planet, "planet")?;
                 }
+                Some("N") => {
+                    require_field_count(&fields, 19, "moon")?;
+                    let orbital_radius =
+                        Length::from_meters(parse_float_bits(fields[5], "moon orbital radius")?)?;
+                    let orbital_elements = OrbitalElements::new(
+                        Length::from_meters(parse_float_bits(fields[12], "moon semi-major axis")?)?,
+                        parse_float_bits(fields[13], "moon eccentricity")?,
+                        Angle::from_radians(parse_float_bits(fields[14], "moon inclination")?)?,
+                        Angle::from_radians(parse_float_bits(fields[15], "moon ascending node")?)?,
+                        Angle::from_radians(parse_float_bits(
+                            fields[16],
+                            "moon periapsis argument",
+                        )?)?,
+                        Angle::from_radians(parse_float_bits(fields[17], "moon mean anomaly")?)?,
+                        SimDuration::from_seconds(parse_number(fields[18], "moon orbit epoch")?),
+                    )?;
+                    let moon = Moon {
+                        id: MoonId::new(parse_number(fields[1], "moon ID")?),
+                        planet_id: PlanetId::new(parse_number(fields[2], "moon planet ID")?),
+                        system_id: StarSystemId::new(parse_number(fields[3], "moon system ID")?),
+                        mass: Mass::from_kilograms(parse_float_bits(fields[4], "moon mass")?)?,
+                        orbital_radius,
+                        position: parse_position(&fields[6..9])?,
+                        velocity: parse_velocity(&fields[9..12])?,
+                        orbital_elements,
+                    };
+                    insert_unique(&mut registry.moons, moon.id, moon, "moon")?;
+                }
+                Some("A") => {
+                    require_field_count(&fields, 7, "asteroid belt")?;
+                    let belt = AsteroidBelt {
+                        id: AsteroidBeltId::new(parse_number(fields[1], "asteroid-belt ID")?),
+                        system_id: StarSystemId::new(parse_number(
+                            fields[2],
+                            "asteroid-belt system ID",
+                        )?),
+                        inner_radius: Length::from_meters(parse_float_bits(
+                            fields[3],
+                            "asteroid-belt inner radius",
+                        )?)?,
+                        outer_radius: Length::from_meters(parse_float_bits(
+                            fields[4],
+                            "asteroid-belt outer radius",
+                        )?)?,
+                        estimated_body_count: parse_number(fields[5], "asteroid-belt body count")?,
+                        total_mass: Mass::from_kilograms(parse_float_bits(
+                            fields[6],
+                            "asteroid-belt mass",
+                        )?)?,
+                    };
+                    insert_unique(&mut registry.asteroid_belts, belt.id, belt, "asteroid belt")?;
+                }
+                Some("C") => {
+                    require_field_count(&fields, 7, "comet cloud")?;
+                    let cloud = CometCloud {
+                        id: CometCloudId::new(parse_number(fields[1], "comet-cloud ID")?),
+                        system_id: StarSystemId::new(parse_number(
+                            fields[2],
+                            "comet-cloud system ID",
+                        )?),
+                        inner_radius: Length::from_meters(parse_float_bits(
+                            fields[3],
+                            "comet-cloud inner radius",
+                        )?)?,
+                        outer_radius: Length::from_meters(parse_float_bits(
+                            fields[4],
+                            "comet-cloud outer radius",
+                        )?)?,
+                        estimated_body_count: parse_number(fields[5], "comet-cloud body count")?,
+                        total_mass: Mass::from_kilograms(parse_float_bits(
+                            fields[6],
+                            "comet-cloud mass",
+                        )?)?,
+                    };
+                    insert_unique(&mut registry.comet_clouds, cloud.id, cloud, "comet cloud")?;
+                }
+                Some("D") => {
+                    require_field_count(&fields, 7, "debris disk")?;
+                    let disk = DebrisDisk {
+                        id: DebrisDiskId::new(parse_number(fields[1], "debris-disk ID")?),
+                        system_id: StarSystemId::new(parse_number(
+                            fields[2],
+                            "debris-disk system ID",
+                        )?),
+                        inner_radius: Length::from_meters(parse_float_bits(
+                            fields[3],
+                            "debris-disk inner radius",
+                        )?)?,
+                        outer_radius: Length::from_meters(parse_float_bits(
+                            fields[4],
+                            "debris-disk outer radius",
+                        )?)?,
+                        estimated_body_count: parse_number(fields[5], "debris-disk body count")?,
+                        total_mass: Mass::from_kilograms(parse_float_bits(
+                            fields[6],
+                            "debris-disk mass",
+                        )?)?,
+                    };
+                    insert_unique(&mut registry.debris_disks, disk.id, disk, "debris disk")?;
+                }
                 Some(tag) => return Err(ObjectError(format!("unknown object record '{tag}'"))),
                 None => return Err(ObjectError("empty object record".to_owned())),
             }
@@ -2068,6 +2708,10 @@ struct GeneratedSystem {
     system: StarSystem,
     stars: Vec<Star>,
     planets: Vec<Planet>,
+    moons: Vec<Moon>,
+    asteroid_belts: Vec<AsteroidBelt>,
+    comet_clouds: Vec<CometCloud>,
+    debris_disks: Vec<DebrisDisk>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2175,12 +2819,15 @@ fn generate_system(
         )
     };
     let orbital_radii = stable_orbital_radii(&mut system_rng, planet_count, config);
+    let max_planet_orbit_au = orbital_radii.iter().copied().fold(0.0_f64, f64::max);
     let mut planet_ids = Vec::with_capacity(usize::from(planet_count));
     let mut planets = Vec::with_capacity(usize::from(planet_count));
+    let mut moon_ids = Vec::new();
+    let mut moons = Vec::new();
     for (planet_index, orbit_au) in (0..planet_count).zip(orbital_radii) {
         let planet_key = (system_key << 8) | u64::from(planet_index);
         let planet_id = PlanetId::new(derive_object_seed(seed, planet_key, "planet-id-v1"));
-        planets.push(generate_planet(
+        let planet = generate_planet(
             seed,
             planet_id,
             system_id,
@@ -2191,8 +2838,59 @@ fn generate_system(
             orbit_au,
             population.metallicity,
             config,
-        )?);
+        )?;
         planet_ids.push(planet_id);
+        let moon_count = generate_moon_count(&mut system_rng, planet.mass);
+        for moon_index in 0..moon_count {
+            let moon_key =
+                (system_key << 16) | (u64::from(planet_index) << 8) | u64::from(moon_index);
+            let moon_id = MoonId::new(derive_object_seed(seed, moon_key, "moon-id-v1"));
+            if let Some(moon) = generate_moon(
+                moon_id,
+                planet.id,
+                system_id,
+                planet.position,
+                planet.velocity,
+                planet.mass,
+                current_primary_mass,
+                orbit_au,
+                &mut system_rng,
+            )? {
+                moons.push(moon);
+                moon_ids.push(moon_id);
+            }
+        }
+        planets.push(planet);
+    }
+
+    let mut asteroid_belt_ids = Vec::new();
+    let mut asteroid_belts = Vec::new();
+    if primary_stage != StellarStage::Disrupted && system_rng.next_f64() < 0.70 {
+        let id = AsteroidBeltId::new(derive_object_seed(seed, system_key, "asteroid-belt-id-v1"));
+        asteroid_belts.push(generate_asteroid_belt(
+            id,
+            system_id,
+            &mut system_rng,
+            max_planet_orbit_au,
+        )?);
+        asteroid_belt_ids.push(id);
+    }
+    let mut comet_cloud_ids = Vec::new();
+    let mut comet_clouds = Vec::new();
+    if primary_stage != StellarStage::Disrupted && system_rng.next_f64() < 0.55 {
+        let id = CometCloudId::new(derive_object_seed(seed, system_key, "comet-cloud-id-v1"));
+        comet_clouds.push(generate_comet_cloud(id, system_id, &mut system_rng)?);
+        comet_cloud_ids.push(id);
+    }
+    let mut debris_disk_ids = Vec::new();
+    let mut debris_disks = Vec::new();
+    if primary_stage != StellarStage::Disrupted
+        && population.epoch_age.seconds() <= 200_000_000 * SECONDS_PER_YEAR
+        && system_rng.next_f64() < 0.80
+    {
+        let id = DebrisDiskId::new(derive_object_seed(seed, system_key, "debris-disk-id-v1"));
+        debris_disks.push(generate_debris_disk(id, system_id, &mut system_rng)?);
+        debris_disk_ids.push(id);
     }
 
     Ok(GeneratedSystem {
@@ -2204,10 +2902,18 @@ fn generate_system(
             star_id,
             companion_star_ids,
             planet_ids,
+            moon_ids,
+            asteroid_belt_ids,
+            comet_cloud_ids,
+            debris_disk_ids,
             component: population.component,
         },
         stars,
         planets,
+        moons,
+        asteroid_belts,
+        comet_clouds,
+        debris_disks,
     })
 }
 
@@ -2770,8 +3476,8 @@ fn generate_planet(
     id: PlanetId,
     system_id: StarSystemId,
     star_id: StarId,
-    system_position: Position,
-    system_velocity: Velocity,
+    planet_position: Position,
+    planet_velocity: Velocity,
     star_mass: Mass,
     orbit_au: f64,
     metallicity: f64,
@@ -2799,8 +3505,8 @@ fn generate_planet(
         orbital_elements,
         star_mass,
         SimDuration::ZERO,
-        system_position,
-        system_velocity,
+        planet_position,
+        planet_velocity,
     )?;
     Ok(Planet {
         id,
@@ -2813,6 +3519,152 @@ fn generate_planet(
         orbital_elements,
         status: PlanetStatus::Stable,
     })
+}
+
+fn generate_moon_count(rng: &mut StableRng, planet_mass: Mass) -> u8 {
+    let mass_earth = planet_mass.earth_masses();
+    if mass_earth < 0.2 {
+        return 0;
+    }
+    let occurrence = (0.10 + 0.25 * mass_earth.ln().max(0.0)).clamp(0.10, 0.85);
+    if rng.next_f64() >= occurrence {
+        return 0;
+    }
+    let maximum: u64 = if mass_earth >= 20.0 {
+        4
+    } else if mass_earth >= 2.0 {
+        2
+    } else {
+        1
+    };
+    1 + u8::try_from(rng.next_u64_below(maximum).unwrap_or(0)).unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_moon(
+    id: MoonId,
+    planet_id: PlanetId,
+    system_id: StarSystemId,
+    planet_position: Position,
+    planet_velocity: Velocity,
+    planet_mass: Mass,
+    star_mass: Mass,
+    planet_orbit_au: f64,
+    rng: &mut StableRng,
+) -> Result<Option<Moon>, ObjectError> {
+    let planet_radius = planet_radius_meters(planet_mass);
+    let hill_radius = planet_orbit_au
+        * METERS_PER_ASTRONOMICAL_UNIT
+        * (planet_mass.kilograms() / (3.0 * star_mass.kilograms())).cbrt();
+    let minimum_axis = planet_radius * 6.0;
+    let maximum_axis = hill_radius * 0.25;
+    if !maximum_axis.is_finite() || maximum_axis <= minimum_axis {
+        return Ok(None);
+    }
+    let axis = random_range(rng, minimum_axis, maximum_axis);
+    let mass_earth = (random_range(rng, 0.00001, 0.02) * planet_mass.earth_masses().sqrt())
+        .clamp(0.000001, 0.08);
+    let orbital_elements = OrbitalElements::new(
+        Length::from_meters(axis)?,
+        random_range(rng, 0.0, 0.15),
+        Angle::from_degrees(random_signed(rng) * 8.0)?,
+        Angle::from_radians(std::f64::consts::TAU * rng.next_f64())?,
+        Angle::from_radians(std::f64::consts::TAU * rng.next_f64())?,
+        Angle::from_radians(std::f64::consts::TAU * rng.next_f64())?,
+        SimDuration::ZERO,
+    )?;
+    let planet_mass = Mass::from_earth_masses(mass_earth)?;
+    let (position, velocity) = propagate_kepler(
+        orbital_elements,
+        planet_mass,
+        SimDuration::ZERO,
+        planet_position,
+        planet_velocity,
+    )?;
+    Ok(Some(Moon {
+        id,
+        planet_id,
+        system_id,
+        mass: planet_mass,
+        orbital_radius: Length::from_meters(axis)?,
+        position,
+        velocity,
+        orbital_elements,
+    }))
+}
+
+fn generate_asteroid_belt(
+    id: AsteroidBeltId,
+    system_id: StarSystemId,
+    rng: &mut StableRng,
+    max_planet_orbit_au: f64,
+) -> Result<AsteroidBelt, ObjectError> {
+    let inner_au = if max_planet_orbit_au > 0.0 {
+        max_planet_orbit_au * random_range(rng, 1.25, 2.0)
+    } else {
+        random_range(rng, 1.0, 3.0)
+    };
+    let outer_au = inner_au * random_range(rng, 1.4, 3.0);
+    Ok(AsteroidBelt {
+        id,
+        system_id,
+        inner_radius: Length::from_astronomical_units(inner_au)?,
+        outer_radius: Length::from_astronomical_units(outer_au)?,
+        estimated_body_count: 1_000_000 + rng.next_u64_below(9_000_000_000).unwrap_or(0),
+        total_mass: Mass::from_earth_masses(random_range(rng, 0.00001, 0.25))?,
+    })
+}
+
+fn generate_comet_cloud(
+    id: CometCloudId,
+    system_id: StarSystemId,
+    rng: &mut StableRng,
+) -> Result<CometCloud, ObjectError> {
+    let inner_au = random_range(rng, 30.0, 80.0);
+    let outer_au = inner_au * random_range(rng, 4.0, 20.0);
+    Ok(CometCloud {
+        id,
+        system_id,
+        inner_radius: Length::from_astronomical_units(inner_au)?,
+        outer_radius: Length::from_astronomical_units(outer_au)?,
+        estimated_body_count: 100_000 + rng.next_u64_below(10_000_000_000).unwrap_or(0),
+        total_mass: Mass::from_earth_masses(random_range(rng, 0.001, 2.0))?,
+    })
+}
+
+fn generate_debris_disk(
+    id: DebrisDiskId,
+    system_id: StarSystemId,
+    rng: &mut StableRng,
+) -> Result<DebrisDisk, ObjectError> {
+    let inner_au = random_range(rng, 0.05, 0.5);
+    let outer_au = inner_au * random_range(rng, 5.0, 30.0);
+    Ok(DebrisDisk {
+        id,
+        system_id,
+        inner_radius: Length::from_astronomical_units(inner_au)?,
+        outer_radius: Length::from_astronomical_units(outer_au)?,
+        estimated_body_count: 10_000 + rng.next_u64_below(100_000_000).unwrap_or(0),
+        total_mass: Mass::from_earth_masses(random_range(rng, 0.000001, 0.05))?,
+    })
+}
+
+fn planet_radius_meters(mass: Mass) -> f64 {
+    6.371e6 * mass.earth_masses().max(0.000001).powf(0.27)
+}
+
+fn validate_small_body_population(
+    inner_radius: Length,
+    outer_radius: Length,
+    estimated_body_count: u64,
+    kind: &str,
+) -> Result<(), ObjectError> {
+    if inner_radius >= outer_radius || estimated_body_count == 0 {
+        return Err(ObjectError(format!(
+            "{kind} must have an increasing radial range and a nonzero population"
+        )));
+    }
+    Ok(())
 }
 
 fn generate_planet_count(
@@ -3050,6 +3902,30 @@ impl From<PlanetId> for u64 {
     }
 }
 
+impl From<MoonId> for u64 {
+    fn from(id: MoonId) -> Self {
+        id.value()
+    }
+}
+
+impl From<AsteroidBeltId> for u64 {
+    fn from(id: AsteroidBeltId) -> Self {
+        id.value()
+    }
+}
+
+impl From<CometCloudId> for u64 {
+    fn from(id: CometCloudId) -> Self {
+        id.value()
+    }
+}
+
+impl From<DebrisDiskId> for u64 {
+    fn from(id: DebrisDiskId) -> Self {
+        id.value()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3064,6 +3940,35 @@ mod tests {
         assert_eq!(first.counts().star_systems, 4);
         assert!(first.counts().stars >= 4);
         assert!(first.counts().stars <= 12);
+    }
+
+    #[test]
+    fn generation_adds_moons_and_aggregate_small_body_populations() {
+        let mut config = GenerationConfig::DEFAULT;
+        config.star_systems = 128;
+        let objects = ObjectRegistry::generate(42, config).unwrap();
+        let counts = objects.counts();
+        assert!(counts.moons > 0);
+        assert!(counts.asteroid_belts > 0);
+        assert!(counts.comet_clouds > 0);
+        assert!(counts.debris_disks > 0);
+        for moon in objects.moons() {
+            let planet = objects.planet(moon.planet_id()).unwrap();
+            assert_eq!(planet.system_id(), moon.system_id());
+            assert!(moon.orbital_radius().meters() > 0.0);
+            assert!(
+                objects
+                    .star_system(moon.system_id())
+                    .unwrap()
+                    .moon_ids()
+                    .contains(&moon.id())
+            );
+        }
+        for belt in objects.asteroid_belts() {
+            assert!(belt.inner_radius() < belt.outer_radius());
+            assert!(belt.estimated_body_count() > 0);
+        }
+        objects.validate().unwrap();
     }
 
     #[test]

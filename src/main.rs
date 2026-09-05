@@ -267,18 +267,29 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
+    println!("  Moons: {}", counts.moons);
+    println!("  Asteroid belts: {}", counts.asteroid_belts);
+    println!("  Comet clouds: {}", counts.comet_clouds);
+    println!("  Debris disks: {}", counts.debris_disks);
     println!(
         "  Star-forming gas: {:.3} solar masses",
         universe.objects().gas_reservoir_solar_masses()
     );
     print_gas_composition(universe.objects().gas_composition());
-    println!("  Total bodies: {}", counts.stars + counts.planets);
+    println!(
+        "  Total bodies: {}",
+        counts.stars + counts.planets + counts.moons
+    );
     println!(
         "  Total objects: {}",
         universe.galaxies().count()
             + counts.star_systems
             + counts.stars
             + counts.planets
+            + counts.moons
+            + counts.asteroid_belts
+            + counts.comet_clouds
+            + counts.debris_disks
             + counts.gas_reservoirs
     );
     println!("  State: {}", args.output.display());
@@ -457,6 +468,10 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
+    println!("  Moons: {}", counts.moons);
+    println!("  Asteroid belts: {}", counts.asteroid_belts);
+    println!("  Comet clouds: {}", counts.comet_clouds);
+    println!("  Debris disks: {}", counts.debris_disks);
     println!(
         "  Star-forming gas: {:.3} solar masses",
         universe.objects().gas_reservoir_solar_masses()
@@ -667,6 +682,66 @@ fn print_object(object: ObjectRef<'_>) {
             );
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
             println!("  Velocity: [{vx:.3e}, {vy:.3e}, {vz:.3e}] m/s");
+        }
+        ObjectRef::Moon(moon) => {
+            let [x, y, z] = moon.position().meters();
+            let [vx, vy, vz] = moon.velocity().meters_per_second();
+            println!("MOON {}", moon.id());
+            println!("  System: {}", moon.system_id());
+            println!("  Planet: {}", moon.planet_id());
+            println!("  Mass: {:.6} Earth masses", moon.mass().earth_masses());
+            println!(
+                "  Orbital radius: {:.6} km",
+                moon.orbital_radius().meters() / 1_000.0
+            );
+            println!(
+                "  Eccentricity: {:.6}",
+                moon.orbital_elements().eccentricity()
+            );
+            println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
+            println!("  Velocity: [{vx:.3e}, {vy:.3e}, {vz:.3e}] m/s");
+        }
+        ObjectRef::AsteroidBelt(belt) => {
+            println!("ASTEROID BELT {}", belt.id());
+            println!("  System: {}", belt.system_id());
+            println!(
+                "  Radial range: {:.3} to {:.3} AU",
+                belt.inner_radius().astronomical_units(),
+                belt.outer_radius().astronomical_units()
+            );
+            println!("  Estimated bodies: {}", belt.estimated_body_count());
+            println!(
+                "  Total mass: {:.6} Earth masses",
+                belt.total_mass().earth_masses()
+            );
+        }
+        ObjectRef::CometCloud(cloud) => {
+            println!("COMET CLOUD {}", cloud.id());
+            println!("  System: {}", cloud.system_id());
+            println!(
+                "  Radial range: {:.3} to {:.3} AU",
+                cloud.inner_radius().astronomical_units(),
+                cloud.outer_radius().astronomical_units()
+            );
+            println!("  Estimated bodies: {}", cloud.estimated_body_count());
+            println!(
+                "  Total mass: {:.6} Earth masses",
+                cloud.total_mass().earth_masses()
+            );
+        }
+        ObjectRef::DebrisDisk(disk) => {
+            println!("DEBRIS DISK {}", disk.id());
+            println!("  System: {}", disk.system_id());
+            println!(
+                "  Radial range: {:.3} to {:.3} AU",
+                disk.inner_radius().astronomical_units(),
+                disk.outer_radius().astronomical_units()
+            );
+            println!("  Estimated bodies: {}", disk.estimated_body_count());
+            println!(
+                "  Total mass: {:.6} Earth masses",
+                disk.total_mass().earth_masses()
+            );
         }
     }
 }

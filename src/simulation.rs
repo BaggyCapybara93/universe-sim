@@ -22,9 +22,9 @@ use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
 
-pub const STATE_FORMAT_VERSION: u32 = 10;
+pub const STATE_FORMAT_VERSION: u32 = 11;
 pub const SIMULATION_VERSION: u32 = 1;
-pub const GENERATION_VERSION: u32 = 7;
+pub const GENERATION_VERSION: u32 = 8;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -501,8 +501,10 @@ impl Universe {
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 10 {
+            if state_format_version >= 11 {
                 GENERATION_VERSION
+            } else if state_format_version >= 10 {
+                7
             } else if state_format_version >= 9 {
                 6
             } else if state_format_version >= 8 {
@@ -1535,6 +1537,13 @@ mod tests {
             if line == "[regions]" {
                 break;
             }
+            if line.starts_with("N|")
+                || line.starts_with("A|")
+                || line.starts_with("C|")
+                || line.starts_with("D|")
+            {
+                continue;
+            }
             if line.starts_with("Y|") {
                 migrated.push(line.split('|').take(11).collect::<Vec<_>>().join("|"));
             } else if line.starts_with("S|") {
@@ -1553,8 +1562,8 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=10", "state_format_version=2")
-                        .replace("generation_version=7", "generation_version=1"),
+                    line.replace("state_format_version=11", "state_format_version=2")
+                        .replace("generation_version=8", "generation_version=1"),
                 );
             }
         }
@@ -1568,25 +1577,33 @@ mod tests {
         let encoded = Universe::new(test_config()).unwrap().encode();
         let encoded = encoded
             .lines()
+            .filter(|line| {
+                !line.starts_with("N|")
+                    && !line.starts_with("A|")
+                    && !line.starts_with("C|")
+                    && !line.starts_with("D|")
+            })
             .filter(|line| !line.starts_with("galaxies="))
             .map(|line| {
                 if line.starts_with("M|") {
                     line.split('|').take(3).collect::<Vec<_>>().join("|")
+                } else if line.starts_with("Y|") {
+                    line.split('|').take(13).collect::<Vec<_>>().join("|")
                 } else if line.starts_with("R|") || line.starts_with("E|") {
                     let mut fields: Vec<_> = line.split('|').collect();
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=10", "state_format_version=6")
-                        .replace("generation_version=7", "generation_version=3")
+                    line.replace("state_format_version=11", "state_format_version=6")
+                        .replace("generation_version=8", "generation_version=3")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=10"));
-        assert!(upgraded.contains("generation_version=7"));
+        assert!(upgraded.contains("state_format_version=11"));
+        assert!(upgraded.contains("generation_version=8"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

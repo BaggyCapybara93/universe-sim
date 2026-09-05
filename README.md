@@ -37,9 +37,13 @@ a universe-wide ceiling. Only the primary galaxy's origin is generated during
 limit remains 100,000 systems, while aggregate potential population grows with
 the number of materialized galaxy regions.
 
-The generated star and planet totals are reported separately because binary or
-triple companions and planet occurrence are procedural. The CLI also reports
-the resulting total number of physical bodies and all stored objects.
+The generated star, planet, and moon totals are reported separately because
+binary or triple companions, planet occurrence, and moon occurrence are
+procedural. Asteroid belts, comet clouds, and young-system debris disks are
+stored as aggregate populations with estimated body counts and total mass, so
+they do not require materializing billions of individual small bodies. The CLI
+also reports the resulting total number of physical bodies and all stored
+objects.
 Initial stellar masses may extend to 300 solar masses, the simulator's enforced
 upper physical limit. The mass function strongly favors smaller stars, so very
 massive stars remain rare unless a large population is generated.
@@ -199,3 +203,8 @@ cargo test
   its host's radius is destroyed as a collision, while binary components whose
   radii overlap at periastron merge. These are population prescriptions rather
   than hydrodynamic collision calculations.
+- Planets can have deterministic individual moons with persisted parent
+  relationships and planet-centered Keplerian orbits. Systems may also contain
+  aggregate asteroid belts, comet clouds, and debris disks with radial ranges,
+  estimated populations, and total masses. Small-body aggregates are currently
+  descriptive populations rather than individually integrated bodies.

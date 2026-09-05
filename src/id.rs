@@ -44,6 +44,10 @@ stable_id!(GalaxyId, "G");
 stable_id!(StarSystemId, "SYS");
 stable_id!(StarId, "S");
 stable_id!(PlanetId, "P");
+stable_id!(MoonId, "M");
+stable_id!(AsteroidBeltId, "AB");
+stable_id!(CometCloudId, "CC");
+stable_id!(DebrisDiskId, "DD");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdParseError {
