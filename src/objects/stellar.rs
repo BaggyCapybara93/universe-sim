@@ -1,8 +1,16 @@
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
+
+use rayon::prelude::*;
+
 use crate::rng::{StableRng, derive_object_seed};
 use crate::time::{SECONDS_PER_YEAR, SimDuration, TimeError};
-use crate::units::{Luminosity, Mass, Temperature};
+use crate::units::{Luminosity, Mass, Temperature, Velocity};
 
-use super::{ObjectError, Star, StellarStage};
+use super::{
+    ObjectError, ObjectRegistry, PARALLEL_BODY_THRESHOLD, Star, StellarInteractionKind,
+    StellarStage, StellarTransition, random_unit_vector, tick_at_or_after,
+};
 
 pub(super) fn stellar_schedule(
     initial_mass: Mass,
@@ -344,4 +352,114 @@ pub(super) fn roche_lobe_radius(separation: f64, mass_ratio: f64) -> f64 {
     let q_one_third = mass_ratio.max(1e-12).cbrt();
     let q_two_thirds = q_one_third * q_one_third;
     separation * 0.49 * q_two_thirds / (0.6 * q_two_thirds + (1.0 + q_one_third).ln())
+}
+
+impl ObjectRegistry {
+    pub(crate) fn advance_stars_to(
+        &mut self,
+        elapsed: SimDuration,
+        tick_duration: SimDuration,
+    ) -> Result<Vec<StellarTransition>, TimeError> {
+        let mut scheduled = BinaryHeap::new();
+        let stars: Vec<_> = self.stars.values().collect();
+        let schedule_star = |star: &&Star| -> Result<Vec<_>, TimeError> {
+            let target_age = star
+                .epoch_age
+                .checked_add(SimDuration::from_seconds(
+                    elapsed.seconds().saturating_sub(star.formed_at.seconds()),
+                ))
+                .ok_or(TimeError::Overflow)?;
+            let mut items = Vec::new();
+            for (threshold, stage) in stellar_schedule(star.initial_mass, star.metallicity)? {
+                if star.age < threshold && threshold <= target_age && stage > star.stage {
+                    let event_elapsed =
+                        SimDuration::from_seconds(star.formed_at.seconds().saturating_add(
+                            threshold.seconds().saturating_sub(star.epoch_age.seconds()),
+                        ));
+                    let tick = tick_at_or_after(event_elapsed, tick_duration)?;
+                    items.push((tick, threshold.seconds(), star.id, stage));
+                }
+            }
+            Ok(items)
+        };
+        let schedules: Result<Vec<_>, TimeError> = if stars.len() >= PARALLEL_BODY_THRESHOLD {
+            stars.par_iter().map(schedule_star).collect()
+        } else {
+            stars.iter().map(schedule_star).collect()
+        };
+        for item in schedules?.into_iter().flatten() {
+            scheduled.push(Reverse(item));
+        }
+
+        let mut transitions = Vec::new();
+        while let Some(Reverse((tick, _threshold, star_id, stage))) = scheduled.pop() {
+            let star = self.stars.get_mut(&star_id).expect("scheduled star exists");
+            let from = star.stage;
+            let previous_mass = star.current_mass;
+            star.stage = stage;
+            let (mass, luminosity, temperature) =
+                stellar_properties(star.initial_mass, star.metallicity, stage)
+                    .map_err(|_| TimeError::Overflow)?;
+            star.current_mass = mass;
+            star.luminosity = luminosity;
+            star.temperature = temperature;
+            let natal_kick_meters_per_second = natal_kick_speed(star, stage, tick);
+            if natal_kick_meters_per_second > 0 {
+                let mut rng = StableRng::new(derive_object_seed(
+                    star.id.value(),
+                    tick,
+                    "natal-kick-direction-v1",
+                ));
+                let direction = random_unit_vector(&mut rng);
+                let [vx, vy, vz] = star.velocity.meters_per_second();
+                let speed = f64::from(natal_kick_meters_per_second);
+                star.velocity = Velocity::from_meters_per_second(
+                    vx + direction[0] * speed,
+                    vy + direction[1] * speed,
+                    vz + direction[2] * speed,
+                )
+                .map_err(|_| TimeError::Overflow)?;
+            }
+            let collision_impacts = self.apply_direct_planet_collisions(star_id, stage);
+            let impacts = self.apply_stellar_impacts(star_id, previous_mass, mass, stage);
+            transitions.push(StellarTransition {
+                tick,
+                star_id,
+                from,
+                to: stage,
+                impacts,
+                natal_kick_meters_per_second,
+                interaction: None,
+                related_star_id: None,
+            });
+            if !collision_impacts.is_empty() {
+                transitions.push(StellarTransition {
+                    tick,
+                    star_id,
+                    from,
+                    to: stage,
+                    impacts: collision_impacts,
+                    natal_kick_meters_per_second: 0,
+                    interaction: Some(StellarInteractionKind::PlanetaryCollision),
+                    related_star_id: None,
+                });
+            }
+        }
+        let trigger_ticks: BTreeMap<_, _> = transitions
+            .iter()
+            .filter(|transition| transition.interaction.is_none())
+            .map(|transition| (transition.star_id, transition.tick))
+            .collect();
+        transitions.extend(self.resolve_binary_interactions(&trigger_ticks, elapsed)?);
+        for star in self.stars.values_mut() {
+            star.age = star
+                .epoch_age
+                .checked_add(SimDuration::from_seconds(
+                    elapsed.seconds().saturating_sub(star.formed_at.seconds()),
+                ))
+                .ok_or(TimeError::Overflow)?;
+        }
+        self.refresh_planet_temperatures()?;
+        Ok(transitions)
+    }
 }

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
 
+use crate::id::{PlanetId, StarId, StarSystemId};
 use crate::orbital::{
     GRAVITATIONAL_CONSTANT, GravityBody, OrbitalElements, leapfrog_step, propagate_kepler,
 };
@@ -9,9 +10,8 @@ use crate::time::{SimDuration, TimeError};
 use crate::units::{Length, METERS_PER_ASTRONOMICAL_UNIT, Mass, Position, Temperature, Velocity};
 
 use super::{
-    Moon, ObjectError, ObjectRegistry, Planet, PlanetId, PlanetImpact, PlanetImpactKind,
-    PlanetStatus, StarId, StarSystem, StarSystemId, StellarInteractionKind, StellarStage,
-    StellarTransition,
+    Moon, ObjectError, ObjectRegistry, Planet, PlanetImpact, PlanetImpactKind, PlanetStatus,
+    StarSystem, StellarInteractionKind, StellarStage, StellarTransition,
 };
 
 impl ObjectRegistry {
