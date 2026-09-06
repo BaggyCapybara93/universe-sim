@@ -183,6 +183,13 @@ impl Universe {
                 .map_err(RegionError::Time)?,
         );
         objects
+            .advance_planetary_formation_to(
+                region_seed,
+                self.config.generation,
+                self.clock.elapsed(),
+            )
+            .map_err(RegionError::Generation)?;
+        objects
             .advance_orbits_to(self.clock.elapsed())
             .map_err(RegionError::Generation)?;
         self.regions.insert(
@@ -270,6 +277,13 @@ impl Universe {
                 .map_err(SimulationAdvanceError::Time)?,
         );
         self.objects
+            .advance_planetary_formation_to(
+                self.seed(),
+                self.config.generation,
+                next_clock.elapsed(),
+            )
+            .map_err(SimulationAdvanceError::Objects)?;
+        self.objects
             .advance_orbits_to(next_clock.elapsed())
             .map_err(SimulationAdvanceError::Objects)?;
         let generation = self.config.generation;
@@ -293,6 +307,10 @@ impl Universe {
                     .advance_stars_to(next_clock.elapsed(), next_clock.tick_duration().duration())
                     .map_err(SimulationAdvanceError::Time)?,
             );
+            region
+                .objects_mut()
+                .advance_planetary_formation_to(region_seed, generation, next_clock.elapsed())
+                .map_err(SimulationAdvanceError::Objects)?;
             region
                 .objects_mut()
                 .advance_orbits_to(next_clock.elapsed())
@@ -597,8 +615,19 @@ impl Universe {
             )
         };
 
+        let legacy_object_lines: Vec<_> = if state_format_version < 12 {
+            object_lines
+                .iter()
+                .copied()
+                .filter(|line| {
+                    !line.starts_with("X|") && !line.starts_with("K|") && !line.starts_with("Q|")
+                })
+                .collect()
+        } else {
+            object_lines.to_vec()
+        };
         let objects =
-            ObjectRegistry::decode(object_lines.iter().copied()).map_err(StateError::Objects)?;
+            ObjectRegistry::decode(legacy_object_lines.into_iter()).map_err(StateError::Objects)?;
         if !objects
             .galaxies()
             .all(|galaxy| galaxy.id() == primary_galaxy_id)
@@ -705,6 +734,9 @@ impl Universe {
             region_objects
                 .advance_stars_to(elapsed, tick_duration.duration())
                 .map_err(StateError::Time)?;
+            region_objects
+                .advance_planetary_formation_to(region_seed, generation, elapsed)
+                .map_err(StateError::Objects)?;
             region_objects
                 .advance_orbits_to(elapsed)
                 .map_err(StateError::Objects)?;
@@ -865,6 +897,10 @@ impl Universe {
             .objects
             .advance_stars_to(elapsed, tick_duration.duration())
             .map_err(StateError::Time)?;
+        universe
+            .objects
+            .advance_planetary_formation_to(universe.seed(), universe.config().generation, elapsed)
+            .map_err(StateError::Objects)?;
         universe
             .objects
             .advance_orbits_to(elapsed)

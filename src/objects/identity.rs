@@ -2,10 +2,13 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
-use super::{AsteroidBelt, CometCloud, DebrisDisk, Galaxy, Moon, Planet, Star, StarSystem};
+use super::{
+    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, Galaxy, Moon, Planet,
+    ProtoplanetaryDisk, Star, StarSystem,
+};
 use crate::id::{
-    AsteroidBeltId, CometCloudId, DebrisDiskId, GalaxyId, IdParseError, MoonId, PlanetId, StarId,
-    StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, IdParseError,
+    MoonId, PlanetId, ProtoplanetaryDiskId, StarId, StarSystemId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,9 +18,12 @@ pub enum ObjectId {
     Star(StarId),
     Planet(PlanetId),
     Moon(MoonId),
+    Asteroid(AsteroidId),
+    Comet(CometId),
     AsteroidBelt(AsteroidBeltId),
     CometCloud(CometCloudId),
     DebrisDisk(DebrisDiskId),
+    ProtoplanetaryDisk(ProtoplanetaryDiskId),
 }
 
 impl fmt::Display for ObjectId {
@@ -28,9 +34,12 @@ impl fmt::Display for ObjectId {
             Self::Star(id) => id.fmt(formatter),
             Self::Planet(id) => id.fmt(formatter),
             Self::Moon(id) => id.fmt(formatter),
+            Self::Asteroid(id) => id.fmt(formatter),
+            Self::Comet(id) => id.fmt(formatter),
             Self::AsteroidBelt(id) => id.fmt(formatter),
             Self::CometCloud(id) => id.fmt(formatter),
             Self::DebrisDisk(id) => id.fmt(formatter),
+            Self::ProtoplanetaryDisk(id) => id.fmt(formatter),
         }
     }
 }
@@ -64,6 +73,16 @@ impl FromStr for ObjectId {
                 .parse()
                 .map(Self::Moon)
                 .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("AST-") {
+            value
+                .parse()
+                .map(Self::Asteroid)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("COM-") {
+            value
+                .parse()
+                .map(Self::Comet)
+                .map_err(ObjectIdParseError::Id)
         } else if value.starts_with("AB-") {
             value
                 .parse()
@@ -78,6 +97,11 @@ impl FromStr for ObjectId {
             value
                 .parse()
                 .map(Self::DebrisDisk)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("PD-") {
+            value
+                .parse()
+                .map(Self::ProtoplanetaryDisk)
                 .map_err(ObjectIdParseError::Id)
         } else {
             Err(ObjectIdParseError::UnknownPrefix(value.to_owned()))
@@ -96,7 +120,7 @@ impl fmt::Display for ObjectIdParseError {
         match self {
             Self::UnknownPrefix(value) => write!(
                 formatter,
-                "unknown object ID '{value}'; expected G-, SYS-, S-, P-, M-, AB-, CC-, or DD-"
+                "unknown object ID '{value}'; expected G-, SYS-, S-, P-, M-, AST-, COM-, AB-, CC-, DD-, or PD-"
             ),
             Self::Id(error) => error.fmt(formatter),
         }
@@ -112,9 +136,12 @@ pub enum ObjectRef<'a> {
     Star(&'a Star),
     Planet(&'a Planet),
     Moon(&'a Moon),
+    Asteroid(&'a Asteroid),
+    Comet(&'a Comet),
     AsteroidBelt(&'a AsteroidBelt),
     CometCloud(&'a CometCloud),
     DebrisDisk(&'a DebrisDisk),
+    ProtoplanetaryDisk(&'a ProtoplanetaryDisk),
 }
 
 impl From<GalaxyId> for u64 {
@@ -143,6 +170,24 @@ impl From<PlanetId> for u64 {
 
 impl From<MoonId> for u64 {
     fn from(id: MoonId) -> Self {
+        id.value()
+    }
+}
+
+impl From<AsteroidId> for u64 {
+    fn from(id: AsteroidId) -> Self {
+        id.value()
+    }
+}
+
+impl From<CometId> for u64 {
+    fn from(id: CometId) -> Self {
+        id.value()
+    }
+}
+
+impl From<ProtoplanetaryDiskId> for u64 {
+    fn from(id: ProtoplanetaryDiskId) -> Self {
         id.value()
     }
 }

@@ -1,7 +1,8 @@
 use std::fmt;
 
 use crate::id::{
-    AsteroidBeltId, CometCloudId, DebrisDiskId, GalaxyId, MoonId, PlanetId, StarId, StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
+    ProtoplanetaryDiskId, StarId, StarSystemId,
 };
 use crate::orbital::OrbitalElements;
 use crate::rng::{StableRng, derive_object_seed};
@@ -135,9 +136,12 @@ pub struct StarSystem {
     pub(super) companion_star_ids: Vec<StarId>,
     pub(super) planet_ids: Vec<PlanetId>,
     pub(super) moon_ids: Vec<MoonId>,
+    pub(super) asteroid_ids: Vec<AsteroidId>,
+    pub(super) comet_ids: Vec<CometId>,
     pub(super) asteroid_belt_ids: Vec<AsteroidBeltId>,
     pub(super) comet_cloud_ids: Vec<CometCloudId>,
     pub(super) debris_disk_ids: Vec<DebrisDiskId>,
+    pub(super) protoplanetary_disk_ids: Vec<ProtoplanetaryDiskId>,
     pub(super) component: GalacticComponent,
 }
 
@@ -174,6 +178,14 @@ impl StarSystem {
         &self.moon_ids
     }
 
+    pub fn asteroid_ids(&self) -> &[AsteroidId] {
+        &self.asteroid_ids
+    }
+
+    pub fn comet_ids(&self) -> &[CometId] {
+        &self.comet_ids
+    }
+
     pub fn asteroid_belt_ids(&self) -> &[AsteroidBeltId] {
         &self.asteroid_belt_ids
     }
@@ -184,6 +196,10 @@ impl StarSystem {
 
     pub fn debris_disk_ids(&self) -> &[DebrisDiskId] {
         &self.debris_disk_ids
+    }
+
+    pub fn protoplanetary_disk_ids(&self) -> &[ProtoplanetaryDiskId] {
+        &self.protoplanetary_disk_ids
     }
 
     pub const fn component(&self) -> GalacticComponent {
@@ -512,6 +528,95 @@ pub enum PlanetAtmosphere {
     HydrogenHelium,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanetaryComposition {
+    rocky: f64,
+    icy: f64,
+    iron: f64,
+    hydrogen_helium: f64,
+}
+
+impl PlanetaryComposition {
+    pub(crate) fn new(rocky: f64, icy: f64, iron: f64, hydrogen_helium: f64) -> Self {
+        Self {
+            rocky,
+            icy,
+            iron,
+            hydrogen_helium,
+        }
+    }
+
+    pub const fn rocky_fraction(self) -> f64 {
+        self.rocky
+    }
+    pub const fn icy_fraction(self) -> f64 {
+        self.icy
+    }
+    pub const fn iron_fraction(self) -> f64 {
+        self.iron
+    }
+    pub const fn hydrogen_helium_fraction(self) -> f64 {
+        self.hydrogen_helium
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoonOrigin {
+    InSitu,
+    Impact,
+    Captured,
+}
+
+impl MoonOrigin {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::InSitu => "in_situ",
+            Self::Impact => "impact",
+            Self::Captured => "captured",
+        }
+    }
+
+    pub(crate) fn parse_code(value: &str) -> Result<Self, ObjectError> {
+        match value {
+            "in_situ" => Ok(Self::InSitu),
+            "impact" => Ok(Self::Impact),
+            "captured" => Ok(Self::Captured),
+            _ => Err(ObjectError(format!("unknown moon origin '{value}'"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoonFormationHistory {
+    origin: MoonOrigin,
+    formed_at: SimDuration,
+    captured_at: Option<SimDuration>,
+}
+
+impl MoonFormationHistory {
+    pub(crate) const fn new(
+        origin: MoonOrigin,
+        formed_at: SimDuration,
+        captured_at: Option<SimDuration>,
+    ) -> Self {
+        Self {
+            origin,
+            formed_at,
+            captured_at,
+        }
+    }
+
+    pub const fn origin(self) -> MoonOrigin {
+        self.origin
+    }
+    pub const fn formed_at(self) -> SimDuration {
+        self.formed_at
+    }
+    pub const fn captured_at(self) -> Option<SimDuration> {
+        self.captured_at
+    }
+}
+
 impl fmt::Display for PlanetAtmosphere {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -589,7 +694,14 @@ pub struct Planet {
     pub(super) mass: Mass,
     pub(super) radius: Length,
     pub(super) atmosphere: PlanetAtmosphere,
+    pub(super) atmosphere_loss_fraction: f64,
     pub(super) equilibrium_temperature: Temperature,
+    pub(super) in_habitable_zone: bool,
+    pub(super) bulk_composition: PlanetaryComposition,
+    pub(super) formed_at: SimDuration,
+    pub(super) initial_orbital_radius: Length,
+    pub(super) migration_rate_au_per_year: f64,
+    pub(super) scattering_count: u32,
     pub(super) orbital_radius: Length,
     pub(super) position: Position,
     pub(super) velocity: Velocity,
@@ -622,6 +734,10 @@ impl Planet {
         self.atmosphere
     }
 
+    pub const fn atmosphere_loss_fraction(&self) -> f64 {
+        self.atmosphere_loss_fraction
+    }
+
     pub const fn equilibrium_temperature(&self) -> Temperature {
         self.equilibrium_temperature
     }
@@ -632,6 +748,24 @@ impl Planet {
             PlanetAtmosphere::NitrogenRich | PlanetAtmosphere::CarbonDioxideRich
         ) && (240.0..=330.0).contains(&self.equilibrium_temperature.kelvin())
             && matches!(self.status, PlanetStatus::Stable | PlanetStatus::Irradiated)
+    }
+
+    pub const fn is_in_habitable_zone(&self) -> bool {
+        self.in_habitable_zone
+    }
+
+    pub const fn bulk_composition(&self) -> PlanetaryComposition {
+        self.bulk_composition
+    }
+
+    pub const fn formed_at(&self) -> SimDuration {
+        self.formed_at
+    }
+    pub const fn migration_rate_au_per_year(&self) -> f64 {
+        self.migration_rate_au_per_year
+    }
+    pub const fn scattering_count(&self) -> u32 {
+        self.scattering_count
     }
 
     pub const fn orbital_radius(&self) -> Length {
@@ -662,6 +796,11 @@ pub struct Moon {
     pub(super) system_id: StarSystemId,
     pub(super) mass: Mass,
     pub(super) radius: Length,
+    pub(super) atmosphere: PlanetAtmosphere,
+    pub(super) equilibrium_temperature: Temperature,
+    pub(super) formation_history: MoonFormationHistory,
+    pub(super) tidal_migration_rate_m_per_year: f64,
+    pub(super) initial_orbital_radius: Length,
     pub(super) orbital_radius: Length,
     pub(super) position: Position,
     pub(super) velocity: Velocity,
@@ -685,8 +824,102 @@ impl Moon {
     pub const fn radius(&self) -> Length {
         self.radius
     }
+    pub const fn atmosphere(&self) -> PlanetAtmosphere {
+        self.atmosphere
+    }
+    pub const fn equilibrium_temperature(&self) -> Temperature {
+        self.equilibrium_temperature
+    }
+    pub const fn formation_history(&self) -> MoonFormationHistory {
+        self.formation_history
+    }
+    pub const fn tidal_migration_rate_m_per_year(&self) -> f64 {
+        self.tidal_migration_rate_m_per_year
+    }
     pub const fn orbital_radius(&self) -> Length {
         self.orbital_radius
+    }
+    pub const fn position(&self) -> Position {
+        self.position
+    }
+    pub const fn velocity(&self) -> Velocity {
+        self.velocity
+    }
+    pub const fn orbital_elements(&self) -> OrbitalElements {
+        self.orbital_elements
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Asteroid {
+    pub(super) id: AsteroidId,
+    pub(super) belt_id: AsteroidBeltId,
+    pub(super) system_id: StarSystemId,
+    pub(super) mass: Mass,
+    pub(super) radius: Length,
+    pub(super) position: Position,
+    pub(super) velocity: Velocity,
+    pub(super) orbital_elements: OrbitalElements,
+}
+
+impl Asteroid {
+    pub const fn id(&self) -> AsteroidId {
+        self.id
+    }
+    pub const fn belt_id(&self) -> AsteroidBeltId {
+        self.belt_id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn mass(&self) -> Mass {
+        self.mass
+    }
+    pub const fn radius(&self) -> Length {
+        self.radius
+    }
+    pub const fn position(&self) -> Position {
+        self.position
+    }
+    pub const fn velocity(&self) -> Velocity {
+        self.velocity
+    }
+    pub const fn orbital_elements(&self) -> OrbitalElements {
+        self.orbital_elements
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Comet {
+    pub(super) id: CometId,
+    pub(super) cloud_id: CometCloudId,
+    pub(super) system_id: StarSystemId,
+    pub(super) mass: Mass,
+    pub(super) radius: Length,
+    pub(super) volatile_fraction: f64,
+    pub(super) position: Position,
+    pub(super) velocity: Velocity,
+    pub(super) orbital_elements: OrbitalElements,
+}
+
+impl Comet {
+    pub const fn id(&self) -> CometId {
+        self.id
+    }
+    pub const fn cloud_id(&self) -> CometCloudId {
+        self.cloud_id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn mass(&self) -> Mass {
+        self.mass
+    }
+    pub const fn radius(&self) -> Length {
+        self.radius
+    }
+    pub const fn volatile_fraction(&self) -> f64 {
+        self.volatile_fraction
     }
     pub const fn position(&self) -> Position {
         self.position
@@ -771,6 +1004,48 @@ pub struct DebrisDisk {
     pub(super) total_mass: Mass,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtoplanetaryDisk {
+    pub(super) id: ProtoplanetaryDiskId,
+    pub(super) system_id: StarSystemId,
+    pub(super) inner_radius: Length,
+    pub(super) outer_radius: Length,
+    pub(super) initial_mass: Mass,
+    pub(super) remaining_mass: Mass,
+    pub(super) formed_at: SimDuration,
+    pub(super) dissipates_at: SimDuration,
+}
+
+impl ProtoplanetaryDisk {
+    pub const fn id(&self) -> ProtoplanetaryDiskId {
+        self.id
+    }
+    pub const fn system_id(&self) -> StarSystemId {
+        self.system_id
+    }
+    pub const fn inner_radius(&self) -> Length {
+        self.inner_radius
+    }
+    pub const fn outer_radius(&self) -> Length {
+        self.outer_radius
+    }
+    pub const fn initial_mass(&self) -> Mass {
+        self.initial_mass
+    }
+    pub const fn remaining_mass(&self) -> Mass {
+        self.remaining_mass
+    }
+    pub const fn formed_at(&self) -> SimDuration {
+        self.formed_at
+    }
+    pub const fn dissipates_at(&self) -> SimDuration {
+        self.dissipates_at
+    }
+    pub fn is_active_at(&self, elapsed: SimDuration) -> bool {
+        elapsed < self.dissipates_at
+    }
+}
+
 impl DebrisDisk {
     pub const fn id(&self) -> DebrisDiskId {
         self.id
@@ -799,8 +1074,11 @@ pub struct ObjectCounts {
     pub stars: usize,
     pub planets: usize,
     pub moons: usize,
+    pub asteroids: usize,
+    pub comets: usize,
     pub asteroid_belts: usize,
     pub comet_clouds: usize,
     pub debris_disks: usize,
+    pub protoplanetary_disks: usize,
     pub gas_reservoirs: usize,
 }

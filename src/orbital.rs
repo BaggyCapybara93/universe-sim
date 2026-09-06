@@ -77,6 +77,30 @@ impl OrbitalElements {
     pub const fn epoch(self) -> SimDuration {
         self.epoch
     }
+
+    pub fn with_semi_major_axis(self, semi_major_axis: Length) -> Result<Self, OrbitalError> {
+        Self::new(
+            semi_major_axis,
+            self.eccentricity,
+            self.inclination,
+            self.longitude_of_ascending_node,
+            self.argument_of_periapsis,
+            self.mean_anomaly_at_epoch,
+            self.epoch,
+        )
+    }
+
+    pub fn with_eccentricity(self, eccentricity: f64) -> Result<Self, OrbitalError> {
+        Self::new(
+            self.semi_major_axis,
+            eccentricity,
+            self.inclination,
+            self.longitude_of_ascending_node,
+            self.argument_of_periapsis,
+            self.mean_anomaly_at_epoch,
+            self.epoch,
+        )
+    }
 }
 
 pub fn propagate_kepler(

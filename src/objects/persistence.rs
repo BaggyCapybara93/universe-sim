@@ -3,15 +3,17 @@ use std::str::FromStr;
 
 use crate::chemistry::GasComposition;
 use crate::id::{
-    AsteroidBeltId, CometCloudId, DebrisDiskId, GalaxyId, MoonId, PlanetId, StarId, StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
+    ProtoplanetaryDiskId, StarId, StarSystemId,
 };
 use crate::orbital::OrbitalElements;
 use crate::time::SimDuration;
 use crate::units::{Angle, Length, Luminosity, Mass, Position, Temperature, Velocity};
 
 use super::{
-    AsteroidBelt, CometCloud, DebrisDisk, GalacticComponent, Galaxy, Moon, ObjectError,
-    ObjectRegistry, Planet, PlanetAtmosphere, PlanetStatus, Star, StarSystem, StellarStage,
+    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, GalacticComponent, Galaxy, Moon,
+    MoonFormationHistory, MoonOrigin, ObjectError, ObjectRegistry, Planet, PlanetAtmosphere,
+    PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star, StarSystem, StellarStage,
 };
 
 impl ObjectRegistry {
@@ -48,7 +50,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = system.velocity.meters_per_second();
             writeln!(
                 output,
-                "Y|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "Y|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 system.id.value(),
                 system.galaxy_id.value(),
                 float_bits(px),
@@ -62,9 +64,12 @@ impl ObjectRegistry {
                 system.component.code(),
                 encode_ids(&system.companion_star_ids),
                 encode_ids(&system.moon_ids),
+                encode_ids(&system.asteroid_ids),
+                encode_ids(&system.comet_ids),
                 encode_ids(&system.asteroid_belt_ids),
                 encode_ids(&system.comet_cloud_ids),
                 encode_ids(&system.debris_disk_ids),
+                encode_ids(&system.protoplanetary_disk_ids),
             )
             .expect("writing to a String cannot fail");
         }
@@ -100,7 +105,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = planet.velocity.meters_per_second();
             writeln!(
                 output,
-                "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 planet.id.value(),
                 planet.system_id.value(),
                 planet.star_id.value(),
@@ -128,6 +133,16 @@ impl ObjectRegistry {
                 float_bits(planet.radius.meters()),
                 float_bits(planet.equilibrium_temperature.kelvin()),
                 planet.atmosphere.code(),
+                float_bits(planet.atmosphere_loss_fraction),
+                u8::from(planet.in_habitable_zone),
+                float_bits(planet.bulk_composition.rocky_fraction()),
+                float_bits(planet.bulk_composition.icy_fraction()),
+                float_bits(planet.bulk_composition.iron_fraction()),
+                float_bits(planet.bulk_composition.hydrogen_helium_fraction()),
+                planet.formed_at.seconds(),
+                float_bits(planet.initial_orbital_radius.meters()),
+                float_bits(planet.migration_rate_au_per_year),
+                planet.scattering_count,
             )
             .expect("writing to a String cannot fail");
         }
@@ -136,7 +151,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = moon.velocity.meters_per_second();
             writeln!(
                 output,
-                "N|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "N|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 moon.id.value(),
                 moon.planet_id.value(),
                 moon.system_id.value(),
@@ -160,6 +175,15 @@ impl ObjectRegistry {
                 float_bits(moon.orbital_elements.argument_of_periapsis().radians()),
                 float_bits(moon.orbital_elements.mean_anomaly_at_epoch().radians()),
                 moon.orbital_elements.epoch().seconds(),
+                moon.atmosphere.code(),
+                float_bits(moon.equilibrium_temperature.kelvin()),
+                moon.formation_history.origin().code(),
+                moon.formation_history.formed_at().seconds(),
+                moon.formation_history
+                    .captured_at()
+                    .map_or_else(|| "-".to_owned(), |time| time.seconds().to_string()),
+                float_bits(moon.tidal_migration_rate_m_per_year),
+                float_bits(moon.initial_orbital_radius.meters()),
             )
             .expect("writing to a String cannot fail");
         }
@@ -189,6 +213,71 @@ impl ObjectRegistry {
             )
             .expect("writing to a String cannot fail");
         }
+        for asteroid in self.asteroids.values() {
+            let [px, py, pz] = asteroid.position.meters();
+            let [vx, vy, vz] = asteroid.velocity.meters_per_second();
+            writeln!(
+                output,
+                "X|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                asteroid.id.value(),
+                asteroid.belt_id.value(),
+                asteroid.system_id.value(),
+                float_bits(asteroid.mass.kilograms()),
+                float_bits(asteroid.radius.meters()),
+                float_bits(px),
+                float_bits(py),
+                float_bits(pz),
+                float_bits(vx),
+                float_bits(vy),
+                float_bits(vz),
+                float_bits(asteroid.orbital_elements.semi_major_axis().meters()),
+                float_bits(asteroid.orbital_elements.eccentricity()),
+                float_bits(asteroid.orbital_elements.inclination().radians()),
+                float_bits(
+                    asteroid
+                        .orbital_elements
+                        .longitude_of_ascending_node()
+                        .radians()
+                ),
+                float_bits(asteroid.orbital_elements.argument_of_periapsis().radians()),
+                float_bits(asteroid.orbital_elements.mean_anomaly_at_epoch().radians()),
+                asteroid.orbital_elements.epoch().seconds(),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        for comet in self.comets.values() {
+            let [px, py, pz] = comet.position.meters();
+            let [vx, vy, vz] = comet.velocity.meters_per_second();
+            writeln!(
+                output,
+                "K|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                comet.id.value(),
+                comet.cloud_id.value(),
+                comet.system_id.value(),
+                float_bits(comet.mass.kilograms()),
+                float_bits(comet.radius.meters()),
+                float_bits(comet.volatile_fraction),
+                float_bits(px),
+                float_bits(py),
+                float_bits(pz),
+                float_bits(vx),
+                float_bits(vy),
+                float_bits(vz),
+                float_bits(comet.orbital_elements.semi_major_axis().meters()),
+                float_bits(comet.orbital_elements.eccentricity()),
+                float_bits(comet.orbital_elements.inclination().radians()),
+                float_bits(
+                    comet
+                        .orbital_elements
+                        .longitude_of_ascending_node()
+                        .radians()
+                ),
+                float_bits(comet.orbital_elements.argument_of_periapsis().radians()),
+                float_bits(comet.orbital_elements.mean_anomaly_at_epoch().radians()),
+                comet.orbital_elements.epoch().seconds(),
+            )
+            .expect("writing to a String cannot fail");
+        }
         for disk in self.debris_disks.values() {
             writeln!(
                 output,
@@ -199,6 +288,21 @@ impl ObjectRegistry {
                 float_bits(disk.outer_radius.meters()),
                 disk.estimated_body_count,
                 float_bits(disk.total_mass.kilograms()),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        for disk in self.protoplanetary_disks.values() {
+            writeln!(
+                output,
+                "Q|{}|{}|{}|{}|{}|{}|{}|{}",
+                disk.id.value(),
+                disk.system_id.value(),
+                float_bits(disk.inner_radius.meters()),
+                float_bits(disk.outer_radius.meters()),
+                float_bits(disk.initial_mass.kilograms()),
+                float_bits(disk.remaining_mass.kilograms()),
+                disk.formed_at.seconds(),
+                disk.dissipates_at.seconds()
             )
             .expect("writing to a String cannot fail");
         }
@@ -251,7 +355,7 @@ impl ObjectRegistry {
                     super::insert_unique(&mut registry.galaxies, galaxy.id, galaxy, "galaxy")?;
                 }
                 Some("Y") => {
-                    if !matches!(fields.len(), 11..=13 | 17) {
+                    if !matches!(fields.len(), 11..=13 | 17 | 20) {
                         return Err(ObjectError(format!(
                             "star-system record has {} fields; expected 11, 12, 13, or 17",
                             fields.len()
@@ -269,28 +373,49 @@ impl ObjectRegistry {
                         } else {
                             GalacticComponent::Disk
                         },
-                        companion_star_ids: if fields.len() == 13 || fields.len() == 17 {
+                        companion_star_ids: if matches!(fields.len(), 13 | 17 | 20) {
                             parse_ids(fields[12], StarId::new)?
                         } else {
                             Vec::new()
                         },
-                        moon_ids: if fields.len() == 17 {
+                        moon_ids: if matches!(fields.len(), 17 | 20) {
                             parse_ids(fields[13], MoonId::new)?
                         } else {
                             Vec::new()
                         },
-                        asteroid_belt_ids: if fields.len() == 17 {
+                        asteroid_ids: if fields.len() == 20 {
+                            parse_ids(fields[14], AsteroidId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        comet_ids: if fields.len() == 20 {
+                            parse_ids(fields[15], CometId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        asteroid_belt_ids: if fields.len() == 20 {
+                            parse_ids(fields[16], AsteroidBeltId::new)?
+                        } else if fields.len() == 17 {
                             parse_ids(fields[14], AsteroidBeltId::new)?
                         } else {
                             Vec::new()
                         },
-                        comet_cloud_ids: if fields.len() == 17 {
+                        comet_cloud_ids: if fields.len() == 20 {
+                            parse_ids(fields[17], CometCloudId::new)?
+                        } else if fields.len() == 17 {
                             parse_ids(fields[15], CometCloudId::new)?
                         } else {
                             Vec::new()
                         },
-                        debris_disk_ids: if fields.len() == 17 {
+                        debris_disk_ids: if fields.len() == 20 {
+                            parse_ids(fields[18], DebrisDiskId::new)?
+                        } else if fields.len() == 17 {
                             parse_ids(fields[16], DebrisDiskId::new)?
+                        } else {
+                            Vec::new()
+                        },
+                        protoplanetary_disk_ids: if fields.len() == 20 {
+                            parse_ids(fields[19], ProtoplanetaryDiskId::new)?
                         } else {
                             Vec::new()
                         },
@@ -382,7 +507,7 @@ impl ObjectRegistry {
                     super::insert_unique(&mut registry.stars, star.id, star, "star")?;
                 }
                 Some("P") => {
-                    if !matches!(fields.len(), 12 | 19 | 20 | 23) {
+                    if !matches!(fields.len(), 12 | 19 | 20 | 23 | 30 | 33) {
                         return Err(ObjectError(format!(
                             "planet record has {} fields; expected 12, 19, 20, or 23",
                             fields.len()
@@ -415,7 +540,9 @@ impl ObjectRegistry {
                         )?
                     };
                     let mass = Mass::from_kilograms(parse_float_bits(fields[4], "planet mass")?)?;
-                    let atmosphere = if fields.len() == 23 {
+                    let has_planetary_state = fields.len() == 30 || fields.len() == 33;
+                    let has_migration_state = fields.len() == 33;
+                    let atmosphere = if has_planetary_state || fields.len() == 23 {
                         PlanetAtmosphere::parse_code(fields[22])?
                     } else {
                         PlanetAtmosphere::Thin
@@ -425,7 +552,7 @@ impl ObjectRegistry {
                         system_id: StarSystemId::new(parse_number(fields[2], "system ID")?),
                         star_id: StarId::new(parse_number(fields[3], "star ID")?),
                         mass,
-                        radius: if fields.len() == 23 {
+                        radius: if has_planetary_state || fields.len() == 23 {
                             Length::from_meters(parse_float_bits(fields[20], "planet radius")?)?
                         } else {
                             Length::from_meters(super::planetary::planet_radius_meters(
@@ -433,7 +560,12 @@ impl ObjectRegistry {
                             ))?
                         },
                         atmosphere,
-                        equilibrium_temperature: if fields.len() == 23 {
+                        atmosphere_loss_fraction: if has_planetary_state {
+                            parse_float_bits(fields[23], "atmosphere loss fraction")?
+                        } else {
+                            0.0
+                        },
+                        equilibrium_temperature: if has_planetary_state || fields.len() == 23 {
                             Temperature::from_kelvin(parse_float_bits(
                                 fields[21],
                                 "planet equilibrium temperature",
@@ -441,11 +573,52 @@ impl ObjectRegistry {
                         } else {
                             Temperature::from_kelvin(288.0)?
                         },
+                        in_habitable_zone: if has_planetary_state {
+                            parse_number::<u8>(fields[24], "habitable-zone flag")? != 0
+                        } else {
+                            false
+                        },
+                        bulk_composition: if has_planetary_state {
+                            PlanetaryComposition::new(
+                                parse_float_bits(fields[25], "rocky composition")?,
+                                parse_float_bits(fields[26], "icy composition")?,
+                                parse_float_bits(fields[27], "iron composition")?,
+                                parse_float_bits(fields[28], "hydrogen-helium composition")?,
+                            )
+                        } else {
+                            PlanetaryComposition::new(0.8, 0.1, 0.1, 0.0)
+                        },
+                        formed_at: if has_planetary_state {
+                            SimDuration::from_seconds(parse_number(
+                                fields[29],
+                                "planet formation time",
+                            )?)
+                        } else {
+                            SimDuration::ZERO
+                        },
+                        initial_orbital_radius: if has_migration_state {
+                            Length::from_meters(parse_float_bits(
+                                fields[30],
+                                "initial planet orbital radius",
+                            )?)?
+                        } else {
+                            orbital_radius
+                        },
+                        migration_rate_au_per_year: if has_migration_state {
+                            parse_float_bits(fields[31], "planet migration rate")?
+                        } else {
+                            0.0
+                        },
+                        scattering_count: if has_migration_state {
+                            parse_number(fields[32], "planet scattering count")?
+                        } else {
+                            0
+                        },
                         orbital_radius,
                         position: parse_position(&fields[6..9])?,
                         velocity: parse_velocity(&fields[9..12])?,
                         orbital_elements,
-                        status: if fields.len() == 20 || fields.len() == 23 {
+                        status: if matches!(fields.len(), 20 | 23 | 30 | 33) {
                             PlanetStatus::parse_code(fields[19])?
                         } else {
                             PlanetStatus::Stable
@@ -454,13 +627,15 @@ impl ObjectRegistry {
                     super::insert_unique(&mut registry.planets, planet.id, planet, "planet")?;
                 }
                 Some("N") => {
-                    if !matches!(fields.len(), 19 | 20) {
+                    if !matches!(fields.len(), 19 | 20 | 26 | 27) {
                         return Err(ObjectError(format!(
-                            "moon record has {} fields; expected 19 or 20",
+                            "moon record has {} fields; expected 19, 20, 26, or 27",
                             fields.len()
                         )));
                     }
-                    let has_radius = fields.len() == 20;
+                    let has_radius = matches!(fields.len(), 20 | 26 | 27);
+                    let has_moon_state = fields.len() == 26 || fields.len() == 27;
+                    let has_tidal_state = fields.len() == 27;
                     let mass = Mass::from_kilograms(parse_float_bits(fields[4], "moon mass")?)?;
                     let radius = if has_radius {
                         Length::from_meters(parse_float_bits(fields[5], "moon radius")?)?
@@ -514,8 +689,93 @@ impl ObjectRegistry {
                         position: parse_position(&fields[position_start..position_start + 3])?,
                         velocity: parse_velocity(&fields[position_start + 3..position_start + 6])?,
                         orbital_elements,
+                        atmosphere: if has_moon_state {
+                            PlanetAtmosphere::parse_code(fields[20])?
+                        } else {
+                            PlanetAtmosphere::None
+                        },
+                        equilibrium_temperature: if has_moon_state {
+                            Temperature::from_kelvin(parse_float_bits(
+                                fields[21],
+                                "moon equilibrium temperature",
+                            )?)?
+                        } else {
+                            Temperature::from_kelvin(288.0)?
+                        },
+                        formation_history: if has_moon_state {
+                            MoonFormationHistory::new(
+                                MoonOrigin::parse_code(fields[22])?,
+                                SimDuration::from_seconds(parse_number(
+                                    fields[23],
+                                    "moon formation time",
+                                )?),
+                                if fields[24] == "-" {
+                                    None
+                                } else {
+                                    Some(SimDuration::from_seconds(parse_number(
+                                        fields[24],
+                                        "moon capture time",
+                                    )?))
+                                },
+                            )
+                        } else {
+                            MoonFormationHistory::new(MoonOrigin::InSitu, SimDuration::ZERO, None)
+                        },
+                        tidal_migration_rate_m_per_year: if has_moon_state {
+                            parse_float_bits(fields[25], "moon tidal migration rate")?
+                        } else {
+                            0.0
+                        },
+                        initial_orbital_radius: if has_tidal_state {
+                            Length::from_meters(parse_float_bits(
+                                fields[26],
+                                "initial moon orbital radius",
+                            )?)?
+                        } else {
+                            orbital_radius
+                        },
                     };
                     super::insert_unique(&mut registry.moons, moon.id, moon, "moon")?;
+                }
+                Some("X") => {
+                    require_field_count(&fields, 19, "asteroid")?;
+                    let asteroid = Asteroid {
+                        id: AsteroidId::new(parse_number(fields[1], "asteroid ID")?),
+                        belt_id: AsteroidBeltId::new(parse_number(fields[2], "asteroid belt ID")?),
+                        system_id: StarSystemId::new(parse_number(
+                            fields[3],
+                            "asteroid system ID",
+                        )?),
+                        mass: Mass::from_kilograms(parse_float_bits(fields[4], "asteroid mass")?)?,
+                        radius: Length::from_meters(parse_float_bits(
+                            fields[5],
+                            "asteroid radius",
+                        )?)?,
+                        position: parse_position(&fields[6..9])?,
+                        velocity: parse_velocity(&fields[9..12])?,
+                        orbital_elements: parse_orbit(&fields, 12, "asteroid")?,
+                    };
+                    super::insert_unique(
+                        &mut registry.asteroids,
+                        asteroid.id,
+                        asteroid,
+                        "asteroid",
+                    )?;
+                }
+                Some("K") => {
+                    require_field_count(&fields, 20, "comet")?;
+                    let comet = Comet {
+                        id: CometId::new(parse_number(fields[1], "comet ID")?),
+                        cloud_id: CometCloudId::new(parse_number(fields[2], "comet cloud ID")?),
+                        system_id: StarSystemId::new(parse_number(fields[3], "comet system ID")?),
+                        mass: Mass::from_kilograms(parse_float_bits(fields[4], "comet mass")?)?,
+                        radius: Length::from_meters(parse_float_bits(fields[5], "comet radius")?)?,
+                        volatile_fraction: parse_float_bits(fields[6], "comet volatile fraction")?,
+                        position: parse_position(&fields[7..10])?,
+                        velocity: parse_velocity(&fields[10..13])?,
+                        orbital_elements: parse_orbit(&fields, 13, "comet")?,
+                    };
+                    super::insert_unique(&mut registry.comets, comet.id, comet, "comet")?;
                 }
                 Some("A") => {
                     require_field_count(&fields, 7, "asteroid belt")?;
@@ -599,6 +859,49 @@ impl ObjectRegistry {
                     };
                     super::insert_unique(&mut registry.debris_disks, disk.id, disk, "debris disk")?;
                 }
+                Some("Q") => {
+                    require_field_count(&fields, 9, "protoplanetary disk")?;
+                    let disk = ProtoplanetaryDisk {
+                        id: ProtoplanetaryDiskId::new(parse_number(
+                            fields[1],
+                            "protoplanetary-disk ID",
+                        )?),
+                        system_id: StarSystemId::new(parse_number(
+                            fields[2],
+                            "protoplanetary-disk system ID",
+                        )?),
+                        inner_radius: Length::from_meters(parse_float_bits(
+                            fields[3],
+                            "protoplanetary-disk inner radius",
+                        )?)?,
+                        outer_radius: Length::from_meters(parse_float_bits(
+                            fields[4],
+                            "protoplanetary-disk outer radius",
+                        )?)?,
+                        initial_mass: Mass::from_kilograms(parse_float_bits(
+                            fields[5],
+                            "protoplanetary-disk initial mass",
+                        )?)?,
+                        remaining_mass: Mass::from_kilograms(parse_float_bits(
+                            fields[6],
+                            "protoplanetary-disk remaining mass",
+                        )?)?,
+                        formed_at: SimDuration::from_seconds(parse_number(
+                            fields[7],
+                            "protoplanetary-disk formation time",
+                        )?),
+                        dissipates_at: SimDuration::from_seconds(parse_number(
+                            fields[8],
+                            "protoplanetary-disk dissipation time",
+                        )?),
+                    };
+                    super::insert_unique(
+                        &mut registry.protoplanetary_disks,
+                        disk.id,
+                        disk,
+                        "protoplanetary disk",
+                    )?;
+                }
                 Some(tag) => return Err(ObjectError(format!("unknown object record '{tag}'"))),
                 None => return Err(ObjectError("empty object record".to_owned())),
             }
@@ -656,6 +959,26 @@ fn parse_optional_orbit(value: &str) -> Result<Option<OrbitalElements>, ObjectEr
         Angle::from_radians(parse_float_bits(fields[5], "companion mean anomaly")?)?,
         SimDuration::from_seconds(parse_number(fields[6], "companion orbit epoch")?),
     )?))
+}
+
+fn parse_orbit(
+    fields: &[&str],
+    start: usize,
+    prefix: &str,
+) -> Result<OrbitalElements, ObjectError> {
+    OrbitalElements::new(
+        Length::from_meters(parse_float_bits(fields[start], "semi-major axis")?)?,
+        parse_float_bits(fields[start + 1], "eccentricity")?,
+        Angle::from_radians(parse_float_bits(fields[start + 2], "inclination")?)?,
+        Angle::from_radians(parse_float_bits(fields[start + 3], "ascending node")?)?,
+        Angle::from_radians(parse_float_bits(fields[start + 4], "periapsis argument")?)?,
+        Angle::from_radians(parse_float_bits(fields[start + 5], "mean anomaly")?)?,
+        SimDuration::from_seconds(parse_number(
+            fields[start + 6],
+            &format!("{prefix} orbit epoch"),
+        )?),
+    )
+    .map_err(Into::into)
 }
 
 fn parse_float_bits(value: &str, field: &str) -> Result<f64, ObjectError> {

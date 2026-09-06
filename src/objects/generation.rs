@@ -1,6 +1,8 @@
+use crate::chemistry::GasComposition;
 use crate::config::GenerationConfig;
 use crate::id::{
-    AsteroidBeltId, CometCloudId, DebrisDiskId, MoonId, PlanetId, StarId, StarSystemId,
+    AsteroidBeltId, CometCloudId, DebrisDiskId, MoonId, PlanetId, ProtoplanetaryDiskId, StarId,
+    StarSystemId,
 };
 use crate::orbital::{OrbitalElements, propagate_kepler};
 use crate::rng::{StableRng, derive_object_seed};
@@ -8,8 +10,9 @@ use crate::time::{SECONDS_PER_YEAR, SimDuration};
 use crate::units::{Angle, Length, METERS_PER_PARSEC, Mass, Position, Velocity};
 
 use super::{
-    AsteroidBelt, CometCloud, DebrisDisk, GalacticComponent, GalaxyCatalogEntry, GalaxyMorphology,
-    Moon, ObjectError, Planet, Star, StarSystem, StellarStage,
+    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, GalacticComponent, GalaxyCatalogEntry,
+    GalaxyMorphology, Moon, ObjectError, Planet, ProtoplanetaryDisk, Star, StarSystem,
+    StellarStage,
 };
 
 pub(super) struct GeneratedSystem {
@@ -17,9 +20,12 @@ pub(super) struct GeneratedSystem {
     pub(super) stars: Vec<Star>,
     pub(super) planets: Vec<Planet>,
     pub(super) moons: Vec<Moon>,
+    pub(super) asteroids: Vec<Asteroid>,
+    pub(super) comets: Vec<Comet>,
     pub(super) asteroid_belts: Vec<AsteroidBelt>,
     pub(super) comet_clouds: Vec<CometCloud>,
     pub(super) debris_disks: Vec<DebrisDisk>,
+    pub(super) protoplanetary_disks: Vec<ProtoplanetaryDisk>,
 }
 
 pub(super) fn generate_system(
@@ -128,6 +134,8 @@ pub(super) fn generate_system(
     let mut planets = Vec::with_capacity(usize::from(planet_count));
     let mut moon_ids = Vec::new();
     let mut moons = Vec::new();
+    let formation_material = GasComposition::from_metallicity(population.metallicity)
+        .map_err(|error| ObjectError(error.to_string()))?;
     for (planet_index, orbit_au) in (0..planet_count).zip(orbital_radii) {
         let planet_key = (system_key << 8) | u64::from(planet_index);
         let planet_id = PlanetId::new(derive_object_seed(seed, planet_key, "planet-id-v1"));
@@ -141,7 +149,8 @@ pub(super) fn generate_system(
             current_primary_mass,
             current_primary_luminosity,
             orbit_au,
-            population.metallicity,
+            formation_material,
+            SimDuration::ZERO,
             config,
         )?;
         planet_ids.push(planet_id);
@@ -158,7 +167,9 @@ pub(super) fn generate_system(
                 planet.velocity,
                 planet.mass,
                 current_primary_mass,
+                current_primary_luminosity,
                 orbit_au,
+                SimDuration::ZERO,
                 &mut system_rng,
             )? {
                 moons.push(moon);
@@ -168,27 +179,52 @@ pub(super) fn generate_system(
         planets.push(planet);
     }
 
+    let mut asteroid_ids = Vec::new();
+    let mut asteroids = Vec::new();
+
     let mut asteroid_belt_ids = Vec::new();
     let mut asteroid_belts = Vec::new();
     if primary_stage != StellarStage::Disrupted && system_rng.next_f64() < 0.70 {
         let id = AsteroidBeltId::new(derive_object_seed(seed, system_key, "asteroid-belt-id-v1"));
-        asteroid_belts.push(super::planetary::generate_asteroid_belt(
+        let belt = super::planetary::generate_asteroid_belt(
             id,
             system_id,
             &mut system_rng,
             max_planet_orbit_au,
-        )?);
+        )?;
+        let members = super::planetary::generate_asteroids(
+            seed,
+            id,
+            system_id,
+            current_primary_mass,
+            position,
+            velocity,
+            &belt,
+        )?;
+        asteroid_ids.extend(members.iter().map(|asteroid| asteroid.id));
+        asteroids.extend(members);
+        asteroid_belts.push(belt);
         asteroid_belt_ids.push(id);
     }
     let mut comet_cloud_ids = Vec::new();
     let mut comet_clouds = Vec::new();
+    let mut comet_ids = Vec::new();
+    let mut comets = Vec::new();
     if primary_stage != StellarStage::Disrupted && system_rng.next_f64() < 0.55 {
         let id = CometCloudId::new(derive_object_seed(seed, system_key, "comet-cloud-id-v1"));
-        comet_clouds.push(super::planetary::generate_comet_cloud(
+        let cloud = super::planetary::generate_comet_cloud(id, system_id, &mut system_rng)?;
+        let members = super::planetary::generate_comets(
+            seed,
             id,
             system_id,
-            &mut system_rng,
-        )?);
+            current_primary_mass,
+            position,
+            velocity,
+            &cloud,
+        )?;
+        comet_ids.extend(members.iter().map(|comet| comet.id));
+        comets.extend(members);
+        comet_clouds.push(cloud);
         comet_cloud_ids.push(id);
     }
     let mut debris_disk_ids = Vec::new();
@@ -206,6 +242,24 @@ pub(super) fn generate_system(
         debris_disk_ids.push(id);
     }
 
+    let mut protoplanetary_disk_ids = Vec::new();
+    let mut protoplanetary_disks = Vec::new();
+    if primary_stage != StellarStage::Disrupted {
+        let id = ProtoplanetaryDiskId::new(derive_object_seed(
+            seed,
+            system_key,
+            "protoplanetary-disk-id-v1",
+        ));
+        protoplanetary_disks.push(super::planetary::generate_protoplanetary_disk(
+            id,
+            system_id,
+            current_primary_mass,
+            population.epoch_age,
+            &mut system_rng,
+        )?);
+        protoplanetary_disk_ids.push(id);
+    }
+
     Ok(GeneratedSystem {
         system: StarSystem {
             id: system_id,
@@ -216,17 +270,23 @@ pub(super) fn generate_system(
             companion_star_ids,
             planet_ids,
             moon_ids,
+            asteroid_ids,
+            comet_ids,
             asteroid_belt_ids,
             comet_cloud_ids,
             debris_disk_ids,
+            protoplanetary_disk_ids,
             component: population.component,
         },
         stars,
         planets,
         moons,
+        asteroids,
+        comets,
         asteroid_belts,
         comet_clouds,
         debris_disks,
+        protoplanetary_disks,
     })
 }
 

@@ -6,12 +6,12 @@ use crate::id::{PlanetId, StarId, StarSystemId};
 use crate::orbital::{
     GRAVITATIONAL_CONSTANT, GravityBody, OrbitalElements, leapfrog_step, propagate_kepler,
 };
-use crate::time::{SimDuration, TimeError};
+use crate::time::{SECONDS_PER_YEAR, SimDuration, TimeError};
 use crate::units::{Length, METERS_PER_ASTRONOMICAL_UNIT, Mass, Position, Temperature, Velocity};
 
 use super::{
-    Moon, ObjectError, ObjectRegistry, Planet, PlanetImpact, PlanetImpactKind, PlanetStatus,
-    StarSystem, StellarInteractionKind, StellarStage, StellarTransition,
+    Moon, ObjectError, ObjectRegistry, Planet, PlanetAtmosphere, PlanetImpact, PlanetImpactKind,
+    PlanetStatus, StarSystem, StellarInteractionKind, StellarStage, StellarTransition,
 };
 
 impl ObjectRegistry {
@@ -327,6 +327,7 @@ impl ObjectRegistry {
     }
 
     pub(crate) fn advance_orbits_to(&mut self, elapsed: SimDuration) -> Result<(), ObjectError> {
+        self.evolve_planetary_systems(elapsed)?;
         let system_ids: Vec<_> = self.star_systems.keys().copied().collect();
         let mut integrated_systems = BTreeSet::new();
         for system_id in system_ids {
@@ -472,6 +473,132 @@ impl ObjectRegistry {
             moon.position = position;
             moon.velocity = velocity;
         }
+        for asteroid in self.asteroids.values_mut() {
+            let system = &self.star_systems[&asteroid.system_id];
+            let star = &self.stars[&system.star_id];
+            let (position, velocity) = propagate_kepler(
+                asteroid.orbital_elements,
+                star.current_mass,
+                elapsed,
+                system.position,
+                system.velocity,
+            )?;
+            asteroid.position = position;
+            asteroid.velocity = velocity;
+        }
+        for comet in self.comets.values_mut() {
+            let system = &self.star_systems[&comet.system_id];
+            let star = &self.stars[&system.star_id];
+            let (position, velocity) = propagate_kepler(
+                comet.orbital_elements,
+                star.current_mass,
+                elapsed,
+                system.position,
+                system.velocity,
+            )?;
+            comet.position = position;
+            comet.velocity = velocity;
+        }
+        Ok(())
+    }
+
+    fn evolve_planetary_systems(&mut self, elapsed: SimDuration) -> Result<(), ObjectError> {
+        for planet in self.planets.values_mut() {
+            let age_seconds = elapsed.seconds().saturating_sub(planet.formed_at.seconds()) as f64;
+            let age_years = age_seconds / SECONDS_PER_YEAR as f64;
+            let migrated_au = (planet.initial_orbital_radius.astronomical_units()
+                + planet.migration_rate_au_per_year * age_years)
+                .clamp(0.03, 10_000.0);
+            planet.orbital_elements = planet
+                .orbital_elements
+                .with_semi_major_axis(Length::from_astronomical_units(migrated_au)?)?;
+            planet.orbital_radius = Length::from_astronomical_units(migrated_au)?;
+            if let Some(star) = self.stars.get(&planet.star_id) {
+                let flux = star.luminosity.solar_luminosities() / migrated_au.powi(2).max(0.001);
+                planet.atmosphere_loss_fraction = (age_years / 1.0e9 * flux * 0.08).clamp(0.0, 1.0);
+                planet.atmosphere = if planet.atmosphere_loss_fraction >= 0.90 {
+                    PlanetAtmosphere::None
+                } else if planet.atmosphere_loss_fraction >= 0.45 {
+                    PlanetAtmosphere::Thin
+                } else {
+                    planet.atmosphere
+                };
+                planet.equilibrium_temperature = Temperature::from_kelvin(
+                    super::planetary::equilibrium_temperature_kelvin(star.luminosity, migrated_au),
+                )?;
+                planet.in_habitable_zone =
+                    super::planetary::is_in_habitable_zone(star.luminosity, migrated_au);
+            }
+        }
+
+        let system_ids: Vec<_> = self.star_systems.keys().copied().collect();
+        for system_id in system_ids {
+            let mut ids = self.star_systems[&system_id].planet_ids.clone();
+            ids.retain(|id| self.planets.contains_key(id));
+            ids.sort_by(|left, right| {
+                self.planets[left]
+                    .orbital_radius
+                    .meters()
+                    .total_cmp(&self.planets[right].orbital_radius.meters())
+            });
+            for pair in ids.windows(2) {
+                let (inner, outer) = (&self.planets[&pair[0]], &self.planets[&pair[1]]);
+                let inner_apo = inner.orbital_elements.semi_major_axis().meters()
+                    * (1.0 + inner.orbital_elements.eccentricity());
+                let outer_peri = outer.orbital_elements.semi_major_axis().meters()
+                    * (1.0 - outer.orbital_elements.eccentricity());
+                if outer.orbital_radius.meters() / inner.orbital_radius.meters() >= 1.5
+                    && inner_apo < outer_peri
+                {
+                    continue;
+                }
+                let inner_axis = inner.orbital_radius.meters() * 0.99;
+                let outer_axis = outer.orbital_radius.meters() * 1.01;
+                let inner_e = (inner.orbital_elements.eccentricity() + 0.03).min(0.85);
+                let outer_e = (outer.orbital_elements.eccentricity() + 0.03).min(0.85);
+                let inner_orbit = inner
+                    .orbital_elements
+                    .with_semi_major_axis(Length::from_meters(inner_axis)?)?
+                    .with_eccentricity(inner_e)?;
+                let outer_orbit = outer
+                    .orbital_elements
+                    .with_semi_major_axis(Length::from_meters(outer_axis)?)?
+                    .with_eccentricity(outer_e)?;
+                let inner_planet = self.planets.get_mut(&pair[0]).expect("inner planet exists");
+                inner_planet.orbital_elements = inner_orbit;
+                inner_planet.orbital_radius = Length::from_meters(inner_axis)?;
+                inner_planet.scattering_count = inner_planet.scattering_count.saturating_add(1);
+                let outer_planet = self.planets.get_mut(&pair[1]).expect("outer planet exists");
+                outer_planet.orbital_elements = outer_orbit;
+                outer_planet.orbital_radius = Length::from_meters(outer_axis)?;
+                outer_planet.scattering_count = outer_planet.scattering_count.saturating_add(1);
+            }
+        }
+
+        for moon in self.moons.values_mut() {
+            let Some(planet) = self.planets.get(&moon.planet_id) else {
+                continue;
+            };
+            let age_seconds = elapsed
+                .seconds()
+                .saturating_sub(moon.formation_history.formed_at().seconds())
+                as f64;
+            let age_years = age_seconds / SECONDS_PER_YEAR as f64;
+            let target_axis = (moon.initial_orbital_radius.meters()
+                + moon.tidal_migration_rate_m_per_year * age_years)
+                .max(planet.radius.meters() * 2.0);
+            moon.orbital_elements = moon
+                .orbital_elements
+                .with_semi_major_axis(Length::from_meters(target_axis)?)?;
+            moon.orbital_radius = Length::from_meters(target_axis)?;
+            if let Some(star) = self.stars.get(&planet.star_id) {
+                moon.equilibrium_temperature =
+                    Temperature::from_kelvin(super::planetary::equilibrium_temperature_kelvin(
+                        star.luminosity,
+                        planet.orbital_radius.astronomical_units(),
+                    ))?;
+            }
+        }
         Ok(())
     }
 
@@ -501,6 +628,29 @@ impl ObjectRegistry {
                     * (1.0 + planet.orbital_elements.eccentricity())
             })
             .fold(0.0_f64, f64::max);
+        let mut planet_orbits: Vec<_> = system
+            .planet_ids
+            .iter()
+            .filter_map(|id| self.planets.get(id))
+            .filter(|planet| {
+                !matches!(
+                    planet.status,
+                    PlanetStatus::Destroyed | PlanetStatus::Unbound
+                )
+            })
+            .collect();
+        planet_orbits.sort_by(|left, right| {
+            left.orbital_radius
+                .meters()
+                .total_cmp(&right.orbital_radius.meters())
+        });
+        if planet_orbits.windows(2).any(|pair| {
+            pair[1].orbital_radius.meters() / pair[0].orbital_radius.meters() < 1.5
+                || pair[0].orbital_elements.eccentricity() + pair[1].orbital_elements.eccentricity()
+                    > 0.5
+        }) {
+            return true;
+        }
         if max_planet_apoapsis > 0.0
             && companion_orbits.iter().any(|orbit| {
                 orbit.semi_major_axis().meters() * (1.0 - orbit.eccentricity())

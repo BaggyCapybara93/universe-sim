@@ -268,9 +268,12 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
     println!("  Moons: {}", counts.moons);
+    println!("  Individual asteroids: {}", counts.asteroids);
+    println!("  Individual comets: {}", counts.comets);
     println!("  Asteroid belts: {}", counts.asteroid_belts);
     println!("  Comet clouds: {}", counts.comet_clouds);
     println!("  Debris disks: {}", counts.debris_disks);
+    println!("  Protoplanetary disks: {}", counts.protoplanetary_disks);
     println!(
         "  Star-forming gas: {:.3} solar masses",
         universe.objects().gas_reservoir_solar_masses()
@@ -278,7 +281,7 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     print_gas_composition(universe.objects().gas_composition());
     println!(
         "  Total bodies: {}",
-        counts.stars + counts.planets + counts.moons
+        counts.stars + counts.planets + counts.moons + counts.asteroids + counts.comets
     );
     println!(
         "  Total objects: {}",
@@ -287,9 +290,12 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
             + counts.stars
             + counts.planets
             + counts.moons
+            + counts.asteroids
+            + counts.comets
             + counts.asteroid_belts
             + counts.comet_clouds
             + counts.debris_disks
+            + counts.protoplanetary_disks
             + counts.gas_reservoirs
     );
     println!("  State: {}", args.output.display());
@@ -469,9 +475,12 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
     println!("  Moons: {}", counts.moons);
+    println!("  Individual asteroids: {}", counts.asteroids);
+    println!("  Individual comets: {}", counts.comets);
     println!("  Asteroid belts: {}", counts.asteroid_belts);
     println!("  Comet clouds: {}", counts.comet_clouds);
     println!("  Debris disks: {}", counts.debris_disks);
+    println!("  Protoplanetary disks: {}", counts.protoplanetary_disks);
     println!(
         "  Star-forming gas: {:.3} solar masses",
         universe.objects().gas_reservoir_solar_masses()
@@ -507,6 +516,9 @@ fn materialize(args: MaterializeArgs, diagnostics: &Diagnostics) -> Result<(), C
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
+    println!("  Moons: {}", counts.moons);
+    println!("  Individual asteroids: {}", counts.asteroids);
+    println!("  Individual comets: {}", counts.comets);
     println!(
         "  Star-forming gas: {:.3} solar masses",
         objects.gas_reservoir_solar_masses()
@@ -712,6 +724,35 @@ fn print_object(object: ObjectRef<'_>) {
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
             println!("  Velocity: [{vx:.3e}, {vy:.3e}, {vz:.3e}] m/s");
         }
+        ObjectRef::Asteroid(asteroid) => {
+            println!("ASTEROID {}", asteroid.id());
+            println!("  Belt: {}", asteroid.belt_id());
+            println!("  System: {}", asteroid.system_id());
+            println!("  Mass: {:.3e} kg", asteroid.mass().kilograms());
+            println!("  Radius: {:.3} km", asteroid.radius().meters() / 1_000.0);
+            println!(
+                "  Orbital radius: {:.6} AU",
+                asteroid
+                    .orbital_elements()
+                    .semi_major_axis()
+                    .astronomical_units()
+            );
+        }
+        ObjectRef::Comet(comet) => {
+            println!("COMET {}", comet.id());
+            println!("  Cloud: {}", comet.cloud_id());
+            println!("  System: {}", comet.system_id());
+            println!("  Mass: {:.3e} kg", comet.mass().kilograms());
+            println!("  Radius: {:.3} km", comet.radius().meters() / 1_000.0);
+            println!("  Volatile fraction: {:.3}", comet.volatile_fraction());
+            println!(
+                "  Orbital radius: {:.6} AU",
+                comet
+                    .orbital_elements()
+                    .semi_major_axis()
+                    .astronomical_units()
+            );
+        }
         ObjectRef::AsteroidBelt(belt) => {
             println!("ASTEROID BELT {}", belt.id());
             println!("  System: {}", belt.system_id());
@@ -753,6 +794,24 @@ fn print_object(object: ObjectRef<'_>) {
                 "  Total mass: {:.6} Earth masses",
                 disk.total_mass().earth_masses()
             );
+        }
+        ObjectRef::ProtoplanetaryDisk(disk) => {
+            println!("PROTOPLANETARY DISK {}", disk.id());
+            println!("  System: {}", disk.system_id());
+            println!(
+                "  Radial range: {:.3} to {:.3} AU",
+                disk.inner_radius().astronomical_units(),
+                disk.outer_radius().astronomical_units()
+            );
+            println!(
+                "  Initial mass: {:.6} solar masses",
+                disk.initial_mass().solar_masses()
+            );
+            println!(
+                "  Remaining mass: {:.6} solar masses",
+                disk.remaining_mass().solar_masses()
+            );
+            println!("  Dissipates at: {}", disk.dissipates_at());
         }
     }
 }

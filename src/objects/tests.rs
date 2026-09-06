@@ -26,6 +26,9 @@ fn generation_adds_moons_and_aggregate_small_body_populations() {
     assert!(counts.asteroid_belts > 0);
     assert!(counts.comet_clouds > 0);
     assert!(counts.debris_disks > 0);
+    assert!(counts.asteroids > 0);
+    assert!(counts.comets > 0);
+    assert!(counts.protoplanetary_disks > 0);
     assert!(objects.planets().all(|planet| {
         planet.radius().meters() > 0.0 && planet.equilibrium_temperature().kelvin() > 0.0
     }));
@@ -46,6 +49,26 @@ fn generation_adds_moons_and_aggregate_small_body_populations() {
         assert!(belt.inner_radius() < belt.outer_radius());
         assert!(belt.estimated_body_count() > 0);
     }
+    assert!(objects.asteroids().all(|asteroid| {
+        objects
+            .asteroid_belt(asteroid.belt_id())
+            .is_some_and(|belt| belt.system_id() == asteroid.system_id())
+    }));
+    assert!(objects.comets().all(|comet| {
+        objects
+            .comet_cloud(comet.cloud_id())
+            .is_some_and(|cloud| cloud.system_id() == comet.system_id())
+    }));
+    assert!(objects.planets().all(|planet| {
+        let composition = planet.bulk_composition();
+        (composition.rocky_fraction()
+            + composition.icy_fraction()
+            + composition.iron_fraction()
+            + composition.hydrogen_helium_fraction()
+            - 1.0)
+            .abs()
+            < 1.0e-12
+    }));
     objects.validate().unwrap();
 }
 
@@ -388,9 +411,87 @@ fn orbital_catch_up_changes_positions_without_changing_elements() {
             .any(|(id, position, _)| { objects.planet(*id).unwrap().position() != *position })
     );
     assert!(
-        before.iter().all(|(id, _, elements)| {
-            objects.planet(*id).unwrap().orbital_elements() == *elements
+        before.iter().any(|(id, _, elements)| {
+            objects.planet(*id).unwrap().orbital_elements() != *elements
         })
+    );
+}
+
+#[test]
+fn dynamic_protoplanetary_disk_forms_a_system_over_time() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 1;
+    config.planets_per_system_min = 1;
+    config.planets_per_system_max = 1;
+    let mut objects = ObjectRegistry::generate(42, config).unwrap();
+    let ten_myr = SimDuration::from_years(10_000_000).unwrap();
+    objects
+        .form_stars_between(
+            42,
+            config,
+            SimDuration::ZERO,
+            ten_myr,
+            SimDuration::from_years(1_000).unwrap(),
+        )
+        .unwrap();
+    let formed = SimDuration::from_years(15_000_000).unwrap();
+    objects
+        .advance_planetary_formation_to(42, config, formed)
+        .unwrap();
+    let dynamic_star = objects
+        .stars()
+        .find(|star| star.formed_at() == ten_myr)
+        .unwrap();
+    let system = objects.star_system(dynamic_star.system_id()).unwrap();
+    assert_eq!(system.planet_ids().len(), 1);
+    let planet = objects.planet(system.planet_ids()[0]).unwrap();
+    assert_eq!(planet.formed_at(), formed);
+    assert!(
+        objects
+            .protoplanetary_disks()
+            .any(|disk| disk.system_id() == system.id())
+    );
+}
+
+#[test]
+fn planetary_systems_evolve_migration_tides_and_atmospheric_loss() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 128;
+    let mut objects = ObjectRegistry::generate(42, config).unwrap();
+    let planet_before: Vec<_> = objects
+        .planets()
+        .map(|planet| {
+            (
+                planet.id(),
+                planet.orbital_radius(),
+                planet.atmosphere_loss_fraction(),
+            )
+        })
+        .collect();
+    let moon_before: Vec<_> = objects
+        .moons()
+        .map(|moon| (moon.id(), moon.orbital_radius()))
+        .collect();
+    let asteroid_before: Vec<_> = objects
+        .asteroids()
+        .map(|asteroid| (asteroid.id(), asteroid.position()))
+        .collect();
+    objects
+        .advance_orbits_to(SimDuration::from_years(1_000_000_000).unwrap())
+        .unwrap();
+    assert!(planet_before.iter().any(|(id, radius, loss)| {
+        let planet = objects.planet(*id).unwrap();
+        planet.orbital_radius() != *radius && planet.atmosphere_loss_fraction() >= *loss
+    }));
+    assert!(
+        moon_before
+            .iter()
+            .any(|(id, radius)| { objects.moon(*id).unwrap().orbital_radius() != *radius })
+    );
+    assert!(
+        asteroid_before
+            .iter()
+            .any(|(id, position)| { objects.asteroid(*id).unwrap().position() != *position })
     );
 }
 

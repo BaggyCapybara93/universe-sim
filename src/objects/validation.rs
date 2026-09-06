@@ -85,6 +85,8 @@ impl ObjectRegistry {
                 }
             }
             ensure_unique(&system.moon_ids, "star-system moon relationship")?;
+            ensure_unique(&system.asteroid_ids, "star-system asteroid relationship")?;
+            ensure_unique(&system.comet_ids, "star-system comet relationship")?;
             for moon_id in &system.moon_ids {
                 let moon = self.moons.get(moon_id).ok_or_else(|| {
                     ObjectError(format!("{system_id} references missing {moon_id}"))
@@ -106,6 +108,10 @@ impl ObjectRegistry {
             ensure_unique(
                 &system.debris_disk_ids,
                 "star-system debris-disk relationship",
+            )?;
+            ensure_unique(
+                &system.protoplanetary_disk_ids,
+                "star-system protoplanetary-disk relationship",
             )?;
             for belt_id in &system.asteroid_belt_ids {
                 let belt = self.asteroid_belts.get(belt_id).ok_or_else(|| {
@@ -129,6 +135,16 @@ impl ObjectRegistry {
             }
             for disk_id in &system.debris_disk_ids {
                 let disk = self.debris_disks.get(disk_id).ok_or_else(|| {
+                    ObjectError(format!("{system_id} references missing {disk_id}"))
+                })?;
+                if disk.system_id != *system_id {
+                    return Err(ObjectError(format!(
+                        "{disk_id} has an inconsistent parent relationship"
+                    )));
+                }
+            }
+            for disk_id in &system.protoplanetary_disk_ids {
+                let disk = self.protoplanetary_disks.get(disk_id).ok_or_else(|| {
                     ObjectError(format!("{system_id} references missing {disk_id}"))
                 })?;
                 if disk.system_id != *system_id {
@@ -230,6 +246,30 @@ impl ObjectRegistry {
                 "asteroid belt",
             )?;
         }
+        for (asteroid_id, asteroid) in &self.asteroids {
+            if *asteroid_id != asteroid.id {
+                return Err(ObjectError(
+                    "asteroid registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&asteroid.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{asteroid_id} references missing system {}",
+                    asteroid.system_id
+                ))
+            })?;
+            let belt = self.asteroid_belts.get(&asteroid.belt_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{asteroid_id} references missing belt {}",
+                    asteroid.belt_id
+                ))
+            })?;
+            if belt.system_id != asteroid.system_id || !system.asteroid_ids.contains(asteroid_id) {
+                return Err(ObjectError(format!(
+                    "{asteroid_id} has an inconsistent parent relationship"
+                )));
+            }
+        }
         for (cloud_id, cloud) in &self.comet_clouds {
             if *cloud_id != cloud.id {
                 return Err(ObjectError(
@@ -255,6 +295,30 @@ impl ObjectRegistry {
                 "comet cloud",
             )?;
         }
+        for (comet_id, comet) in &self.comets {
+            if *comet_id != comet.id {
+                return Err(ObjectError(
+                    "comet registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&comet.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{comet_id} references missing system {}",
+                    comet.system_id
+                ))
+            })?;
+            let cloud = self.comet_clouds.get(&comet.cloud_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{comet_id} references missing cloud {}",
+                    comet.cloud_id
+                ))
+            })?;
+            if cloud.system_id != comet.system_id || !system.comet_ids.contains(comet_id) {
+                return Err(ObjectError(format!(
+                    "{comet_id} has an inconsistent parent relationship"
+                )));
+            }
+        }
         for (disk_id, disk) in &self.debris_disks {
             if *disk_id != disk.id {
                 return Err(ObjectError(
@@ -279,6 +343,26 @@ impl ObjectRegistry {
                 disk.estimated_body_count,
                 "debris disk",
             )?;
+        }
+        for (disk_id, disk) in &self.protoplanetary_disks {
+            if *disk_id != disk.id {
+                return Err(ObjectError(
+                    "protoplanetary-disk registry key does not match its ID".to_owned(),
+                ));
+            }
+            let system = self.star_systems.get(&disk.system_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{disk_id} references missing system {}",
+                    disk.system_id
+                ))
+            })?;
+            if !system.protoplanetary_disk_ids.contains(disk_id)
+                || disk.inner_radius >= disk.outer_radius
+                || disk.initial_mass.kilograms() < disk.remaining_mass.kilograms()
+                || disk.formed_at > disk.dissipates_at
+            {
+                return Err(ObjectError(format!("{disk_id} has invalid disk state")));
+            }
         }
         Ok(())
     }
