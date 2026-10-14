@@ -4,6 +4,7 @@ pub mod chemistry;
 pub mod config;
 pub mod events;
 pub mod id;
+pub mod matter;
 pub mod objects;
 pub mod orbital;
 pub mod region;
@@ -19,6 +20,7 @@ pub use id::{
     AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
     ProtoplanetaryDiskId, StarId, StarSystemId, UniverseId,
 };
+pub use matter::MatterInventory;
 pub use objects::{
     Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, DynamicsMode, Galaxy,
     GalaxyCatalogEntry, GalaxyMorphology, Moon, MoonFormationHistory, MoonOrigin, ObjectCounts,

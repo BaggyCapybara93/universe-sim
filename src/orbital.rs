@@ -383,6 +383,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn eccentric_kepler_orbit_preserves_invariants_over_a_billion_years() {
+        let mass = Mass::from_solar_masses(1.0).unwrap();
+        let axis = Length::from_astronomical_units(4.0).unwrap();
+        let elements = OrbitalElements::new(
+            axis,
+            0.65,
+            Angle::from_degrees(25.0).unwrap(),
+            Angle::from_degrees(40.0).unwrap(),
+            Angle::from_degrees(70.0).unwrap(),
+            Angle::from_degrees(13.0).unwrap(),
+            SimDuration::ZERO,
+        )
+        .unwrap();
+        let mu = GRAVITATIONAL_CONSTANT * mass.kilograms();
+        let expected_energy = -mu / (2.0 * axis.meters());
+        let expected_h_squared = mu * axis.meters() * (1.0 - elements.eccentricity().powi(2));
+        for years in [0, 1, 100, 1_000_000, 100_000_000, 1_000_000_000] {
+            let (position, velocity) = propagate_kepler(
+                elements,
+                mass,
+                SimDuration::from_years(years).unwrap(),
+                Position::default(),
+                Velocity::default(),
+            )
+            .unwrap();
+            let r = position.meters();
+            let v = velocity.meters_per_second();
+            let radius = dot(r, r).sqrt();
+            let energy = 0.5 * dot(v, v) - mu / radius;
+            let h = [
+                r[1] * v[2] - r[2] * v[1],
+                r[2] * v[0] - r[0] * v[2],
+                r[0] * v[1] - r[1] * v[0],
+            ];
+            assert!(((energy - expected_energy) / expected_energy).abs() < 1e-11);
+            assert!(((dot(h, h) - expected_h_squared) / expected_h_squared).abs() < 1e-11);
+            assert!(radius >= axis.meters() * (1.0 - elements.eccentricity()) * (1.0 - 1e-12));
+            assert!(radius <= axis.meters() * (1.0 + elements.eccentricity()) * (1.0 + 1e-12));
+        }
+    }
+
+    #[test]
+    fn leapfrog_energy_error_stays_bounded_for_a_thousand_years() {
+        let solar_mass = Mass::from_kilograms(KILOGRAMS_PER_SOLAR_MASS).unwrap();
+        let earth_mass = Mass::from_kilograms(KILOGRAMS_PER_EARTH_MASS).unwrap();
+        let radius = Length::from_astronomical_units(1.0).unwrap().meters();
+        let speed = (GRAVITATIONAL_CONSTANT * solar_mass.kilograms() / radius).sqrt();
+        let mut bodies = [
+            GravityBody {
+                mass: solar_mass,
+                position: Position::default(),
+                velocity: Velocity::default(),
+            },
+            GravityBody {
+                mass: earth_mass,
+                position: Position::from_meters(radius, 0.0, 0.0).unwrap(),
+                velocity: Velocity::from_meters_per_second(0.0, speed, 0.0).unwrap(),
+            },
+        ];
+        let initial_energy = total_energy(&bodies);
+        let initial_momentum = total_angular_momentum(&bodies);
+        let mut worst_energy_error: f64 = 0.0;
+        for step in 0..36_525 {
+            leapfrog_step(&mut bodies, 10.0 * 86_400.0).unwrap();
+            if step % 365 == 0 {
+                worst_energy_error = worst_energy_error
+                    .max(((total_energy(&bodies) - initial_energy) / initial_energy).abs());
+            }
+        }
+        let momentum_error =
+            ((total_angular_momentum(&bodies) - initial_momentum) / initial_momentum).abs();
+        // With ten-day steps, the symplectic scheme has bounded energy error
+        // rather than a monotonic drift to zero.
+        assert!(
+            worst_energy_error < 3e-4,
+            "worst relative energy error: {worst_energy_error}"
+        );
+        assert!(
+            momentum_error < 1e-9,
+            "relative angular momentum error: {momentum_error}"
+        );
+    }
+
     fn total_energy(bodies: &[GravityBody; 2]) -> f64 {
         let kinetic: f64 = bodies
             .iter()

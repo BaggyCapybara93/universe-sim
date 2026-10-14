@@ -759,3 +759,110 @@ fn merger_feedback_invalidates_old_schedules_and_is_batch_independent() {
     split_events.sort_by_key(|event| (event.tick, event.star_id, event.to));
     assert_eq!(split_events, whole_events);
 }
+
+#[test]
+fn matter_inventory_accounts_for_star_formation_and_feedback_over_ten_billion_years() {
+    let (mut objects, config) = feedback_fixture(1.0, 0.014);
+    let before = objects.matter_inventory();
+    assert_eq!(before.gas_solar_masses, 0.0);
+    assert_eq!(before.stellar_solar_masses, 1.0);
+    let tick = SimDuration::from_years(1).unwrap();
+    let end = SimDuration::from_years(12_000_000_000).unwrap();
+    let mut previous = before;
+    for years in [
+        10_000_000,
+        100_000_000,
+        1_000_000_000,
+        6_000_000_000,
+        12_000_000_000,
+    ] {
+        let elapsed = SimDuration::from_years(years).unwrap();
+        objects.advance_stars_to(elapsed, tick).unwrap();
+        let now = objects.matter_inventory();
+        assert!((now.tracked_solar_masses() - before.tracked_solar_masses()).abs() < 1e-10);
+        assert!(now.gas_solar_masses >= previous.gas_solar_masses);
+        assert!(now.gas_metal_solar_masses >= previous.gas_metal_solar_masses);
+        previous = now;
+    }
+    assert!(previous.gas_solar_masses > 0.0);
+    assert!(
+        previous.tracked_metal_proxy_solar_masses() > before.tracked_metal_proxy_solar_masses()
+    );
+    let mut encoded = String::new();
+    objects.encode(&mut encoded);
+    let mut restored = ObjectRegistry::decode(encoded.lines().skip(1)).unwrap();
+    restored.advance_stars_to(end, tick).unwrap();
+    assert_eq!(restored.matter_inventory(), previous);
+
+    // In a second closed setup, gas and disk metal mass transfer into a new star.
+    let (mut forming, _) = feedback_fixture(0.1, 0.014);
+    forming.gas_reservoir_solar_masses = 10.0;
+    let initial = forming.matter_inventory();
+    forming
+        .form_stars_between(
+            42,
+            config,
+            SimDuration::ZERO,
+            SimDuration::from_years(10_000_000).unwrap(),
+            tick,
+        )
+        .unwrap();
+    let formed = forming.matter_inventory();
+    assert!((formed.tracked_solar_masses() - initial.tracked_solar_masses()).abs() < 1e-10);
+    assert!(
+        (formed.tracked_metal_proxy_solar_masses() - initial.tracked_metal_proxy_solar_masses())
+            .abs()
+            < 1e-10
+    );
+    assert!(formed.protoplanetary_disk_solar_masses >= initial.protoplanetary_disk_solar_masses);
+}
+
+#[test]
+fn matter_inventory_reports_aggregate_populations_separately() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 128;
+    let objects = ObjectRegistry::generate(42, config).unwrap();
+    let budget = objects.matter_inventory();
+    assert!(budget.aggregate_solar_masses > 0.0);
+    assert!(budget.asteroid_solar_masses > 0.0);
+    assert!(budget.comet_solar_masses > 0.0);
+    assert!(budget.tracked_solar_masses() > budget.stellar_solar_masses);
+    assert!(budget.gas_metal_solar_masses > 0.0);
+}
+
+#[test]
+fn benchmark_seed_follows_reference_imf_slopes_within_each_branch() {
+    // Kroupa, The Local Stellar Initial Mass Function (2000), arXiv:astro-ph/0011328:
+    // dN/dM follows approximately M^-1.3 below 0.5 solar masses and M^-2.3 above it.
+    // This checks conditional branch slopes, not the normalization across the break.
+    let integral = |lo: f64, hi: f64, alpha: f64| {
+        (hi.powf(1.0 - alpha) - lo.powf(1.0 - alpha)) / (1.0 - alpha)
+    };
+    let mut counts = [0_u32; 4];
+    let mut rng = StableRng::new(42);
+    for _ in 0..100_000 {
+        let mass = sample_stellar_mass(&mut rng, 0.1, 16.0);
+        let bin = if mass < 0.25 {
+            0
+        } else if mass < 0.5 {
+            1
+        } else if mass < 2.0 {
+            2
+        } else {
+            3
+        };
+        counts[bin] += 1;
+    }
+    let low_expected = integral(0.1, 0.25, 1.3) / integral(0.25, 0.5, 1.3);
+    let high_expected = integral(0.5, 2.0, 2.3) / integral(2.0, 16.0, 2.3);
+    let low_observed = f64::from(counts[0]) / f64::from(counts[1]);
+    let high_observed = f64::from(counts[2]) / f64::from(counts[3]);
+    assert!(
+        ((low_observed - low_expected) / low_expected).abs() < 0.05,
+        "low-mass ratio {low_observed} differs from {low_expected}"
+    );
+    assert!(
+        ((high_observed - high_expected) / high_expected).abs() < 0.05,
+        "high-mass ratio {high_observed} differs from {high_expected}"
+    );
+}

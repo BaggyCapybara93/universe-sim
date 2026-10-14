@@ -14,6 +14,7 @@ use rayon::prelude::*;
 use crate::config::{ConfigValidationError, GenerationConfig, SimulationConfig};
 use crate::events::{AstroEvent, AstroEventDetails, AstroEventLocation};
 use crate::id::{GalaxyId, UniverseId};
+use crate::matter::MatterInventory;
 use crate::objects::{
     GalaxyCatalogEntry, ObjectError, ObjectRegistry, PlanetImpact, PlanetImpactKind,
     StellarTransition,
@@ -94,6 +95,17 @@ impl Universe {
 
     pub const fn objects(&self) -> &ObjectRegistry {
         &self.objects
+    }
+
+    /// Inventories for materialized regions only; unloaded regions have no
+    /// current detailed object graph to total.
+    pub fn matter_inventories(&self) -> impl Iterator<Item = (GalaxyRegion, MatterInventory)> + '_ {
+        let origin = GalaxyRegion::new(self.primary_galaxy_id(), RegionCoord::ORIGIN);
+        std::iter::once((origin, self.objects.matter_inventory())).chain(
+            self.regions
+                .iter()
+                .map(|(key, region)| (*key, region.objects().matter_inventory())),
+        )
     }
 
     pub fn galaxies(&self) -> impl Iterator<Item = GalaxyCatalogEntry> + '_ {
@@ -1289,6 +1301,13 @@ mod tests {
                 .all(|galaxy| galaxy.id() == second)
         );
         assert_eq!(universe.galaxy_regions().count(), 2);
+        let inventories: Vec<_> = universe.matter_inventories().collect();
+        assert_eq!(inventories.len(), 2);
+        assert!(
+            inventories
+                .iter()
+                .all(|(_, inventory)| inventory.tracked_solar_masses() > 0.0)
+        );
         universe.advance_ticks(10_000).unwrap();
         assert!(
             universe

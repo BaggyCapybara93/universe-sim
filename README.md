@@ -247,3 +247,47 @@ continue under the new rules; historical mass loss is not deposited again.
   equilibrium temperature, and a deliberately conservative potential-
   habitability heuristic. Planet temperatures are refreshed when stellar
   luminosity changes; this is not yet a climate or atmospheric-escape solver.
+
+## Validation and performance baselines
+
+`ObjectRegistry::matter_inventory()` reports gas, stars, active protoplanetary
+disks, planets, moons, individual asteroids and comets, and aggregate small-body
+mass for a materialized region. `Universe::matter_inventories()` covers every
+materialized region, including the primary origin. Aggregate populations are
+listed separately because their masses can overlap the sampled individual
+bodies. Gas metal mass is exact within the stored six-component reservoir;
+stellar and disk metal values are birth-composition proxies. The inventory is
+an observable budget, not a claim of whole-universe conservation: planetary
+formation, disk dissipation, binary-accreted chemistry, and the composition of
+stellar interiors still need fully closed material ledgers.
+
+The validation suite checks that stellar feedback conserves stellar-plus-gas
+mass over 12 billion years, that a new star and its disk are funded by gas,
+and that the modeled metal proxy grows when ejecta are enriched. It also
+checks orbital energy and angular momentum over a billion-year analytical
+Kepler orbit and a thousand-year leapfrog integration. A fixed-seed sampling
+test checks the two *conditional* stellar mass-function slopes against the
+approximate low-mass and high-mass indices summarized in
+[Kroupa, *The Local Stellar Initial Mass Function*](https://arxiv.org/abs/astro-ph/0011328).
+It does not establish normalization across the mass-function break or validate
+supernova rates, remnant ratios, and chemical distributions against observations.
+
+Run the reproducible workload suite with:
+
+```console
+cargo run --release --locked --example benchmark
+```
+
+It emits CSV with generation and advancement times and a full-state fingerprint.
+Each fixed workload runs with one and four Rayon threads; a fingerprint mismatch
+fails the run. A shorter `--smoke` case is available for a quick local check.
+The reference below was measured on macOS 27.0.1, arm64, Rust 1.98.0 in release mode. Millisecond
+values are local observations, not pass/fail thresholds; compare runs on the
+same machine and toolchain.
+
+| Case | Seed | Systems | Ticks | Threads | Generation ms | Advancement ms | Fingerprint |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| small | 42 | 64 | 10,000 | 1 | 1.035 | 0.906 | `278bc6bc44c264b6` |
+| small | 42 | 64 | 10,000 | 4 | 0.678 | 0.731 | `278bc6bc44c264b6` |
+| large | 918273645 | 512 | 1,000,000 | 1 | 5.249 | 36.855 | `8d7598904e05ca3d` |
+| large | 918273645 | 512 | 1,000,000 | 4 | 2.714 | 29.564 | `8d7598904e05ca3d` |
