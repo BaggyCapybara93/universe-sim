@@ -159,6 +159,26 @@ pub struct GasCloud {
     pub(super) mass_solar: f64,
     pub(super) composition: GasComposition,
     pub(super) cluster_ids: Vec<StarClusterId>,
+    pub(super) pending_shock: Option<CloudShock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloudShock {
+    pub(super) source_star_id: StarId,
+    pub(super) arrived_at: SimDuration,
+    pub(super) strength: f64,
+}
+
+impl CloudShock {
+    pub const fn source_star_id(self) -> StarId {
+        self.source_star_id
+    }
+    pub const fn arrived_at(self) -> SimDuration {
+        self.arrived_at
+    }
+    pub const fn strength(self) -> f64 {
+        self.strength
+    }
 }
 
 impl GasCloud {
@@ -183,6 +203,9 @@ impl GasCloud {
     pub fn cluster_ids(&self) -> &[StarClusterId] {
         &self.cluster_ids
     }
+    pub const fn pending_shock(&self) -> Option<CloudShock> {
+        self.pending_shock
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,6 +215,7 @@ pub struct StarCluster {
     pub(super) formed_at: SimDuration,
     pub(super) position: Position,
     pub(super) system_ids: Vec<StarSystemId>,
+    pub(super) triggering_star_id: Option<StarId>,
 }
 
 impl StarCluster {
@@ -209,6 +233,9 @@ impl StarCluster {
     }
     pub fn system_ids(&self) -> &[StarSystemId] {
         &self.system_ids
+    }
+    pub const fn triggering_star_id(&self) -> Option<StarId> {
+        self.triggering_star_id
     }
 }
 

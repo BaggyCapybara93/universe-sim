@@ -641,12 +641,23 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry) {
             println!("  Mass: {:.6} solar masses", cloud.mass_solar());
             println!("  Metallicity: {:.6}", cloud.composition().metallicity());
             println!("  Clusters: {}", cloud.cluster_ids().len());
+            if let Some(shock) = cloud.pending_shock() {
+                println!(
+                    "  Pending supernova shock: source {}, strength {:.3}, arrived at {}",
+                    shock.source_star_id(),
+                    shock.strength(),
+                    shock.arrived_at()
+                );
+            }
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
         }
         ObjectRef::StarCluster(cluster) => {
             println!("STAR CLUSTER {}", cluster.id());
             println!("  Source cloud: {}", cluster.cloud_id());
             println!("  Formed at: {}", cluster.formed_at());
+            if let Some(source) = cluster.triggering_star_id() {
+                println!("  Triggered by supernova: {source}");
+            }
             println!(
                 "  Systems: {}",
                 cluster

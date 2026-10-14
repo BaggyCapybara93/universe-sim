@@ -23,9 +23,9 @@ use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
 
-pub const STATE_FORMAT_VERSION: u32 = 14;
-pub const SIMULATION_VERSION: u32 = 3;
-pub const GENERATION_VERSION: u32 = 11;
+pub const STATE_FORMAT_VERSION: u32 = 15;
+pub const SIMULATION_VERSION: u32 = 4;
+pub const GENERATION_VERSION: u32 = 12;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -530,8 +530,10 @@ impl Universe {
         require_version(
             &fields,
             "simulation_version",
-            if state_format_version >= 14 {
+            if state_format_version >= 15 {
                 SIMULATION_VERSION
+            } else if state_format_version >= 14 {
+                3
             } else if state_format_version >= 13 {
                 2
             } else {
@@ -541,8 +543,10 @@ impl Universe {
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 14 {
+            if state_format_version >= 15 {
                 GENERATION_VERSION
+            } else if state_format_version >= 14 {
+                11
             } else if state_format_version >= 13 {
                 10
             } else if state_format_version >= 12 {
@@ -1474,9 +1478,9 @@ mod tests {
                 } else if line.starts_with("Y|") {
                     line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=14", "state_format_version=12")
-                        .replace("simulation_version=3", "simulation_version=1")
-                        .replace("generation_version=11", "generation_version=9")
+                    line.replace("state_format_version=15", "state_format_version=12")
+                        .replace("simulation_version=4", "simulation_version=1")
+                        .replace("generation_version=12", "generation_version=9")
                 }
             })
             .collect::<Vec<_>>()
@@ -1513,9 +1517,9 @@ mod tests {
                 if line.starts_with("Y|") {
                     line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=14", "state_format_version=13")
-                        .replace("simulation_version=3", "simulation_version=2")
-                        .replace("generation_version=11", "generation_version=10")
+                    line.replace("state_format_version=15", "state_format_version=13")
+                        .replace("simulation_version=4", "simulation_version=2")
+                        .replace("generation_version=12", "generation_version=10")
                 }
             })
             .collect::<Vec<_>>()
@@ -1531,6 +1535,29 @@ mod tests {
             restored.objects().star_systems().count()
         );
         assert_eq!(Universe::decode(&restored.encode()).unwrap(), restored);
+    }
+
+    #[test]
+    fn version_fourteen_cloud_state_loads_without_shock_fields() {
+        let universe = Universe::new(test_config()).unwrap();
+        let legacy = universe
+            .encode()
+            .lines()
+            .map(|line| {
+                if line.starts_with("H|") {
+                    line.split('|').take(14).collect::<Vec<_>>().join("|")
+                } else if line.starts_with("L|") {
+                    line.split('|').take(8).collect::<Vec<_>>().join("|")
+                } else {
+                    line.replace("state_format_version=15", "state_format_version=14")
+                        .replace("simulation_version=4", "simulation_version=3")
+                        .replace("generation_version=12", "generation_version=11")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let restored = Universe::decode(&legacy).unwrap();
+        assert_eq!(restored, universe);
     }
 
     #[test]
@@ -1761,9 +1788,9 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=14", "state_format_version=2")
-                        .replace("generation_version=11", "generation_version=1")
-                        .replace("simulation_version=3", "simulation_version=1"),
+                    line.replace("state_format_version=15", "state_format_version=2")
+                        .replace("generation_version=12", "generation_version=1")
+                        .replace("simulation_version=4", "simulation_version=1"),
                 );
             }
         }
@@ -1796,17 +1823,17 @@ mod tests {
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=14", "state_format_version=6")
-                        .replace("generation_version=11", "generation_version=3")
-                        .replace("simulation_version=3", "simulation_version=1")
+                    line.replace("state_format_version=15", "state_format_version=6")
+                        .replace("generation_version=12", "generation_version=3")
+                        .replace("simulation_version=4", "simulation_version=1")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=14"));
-        assert!(upgraded.contains("generation_version=11"));
+        assert!(upgraded.contains("state_format_version=15"));
+        assert!(upgraded.contains("generation_version=12"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

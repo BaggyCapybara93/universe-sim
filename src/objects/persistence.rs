@@ -11,10 +11,10 @@ use crate::time::SimDuration;
 use crate::units::{Angle, Length, Luminosity, Mass, Position, Temperature, Velocity};
 
 use super::{
-    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, GalacticComponent, Galaxy, GasCloud,
-    GasCloudKind, Moon, MoonFormationHistory, MoonOrigin, ObjectError, ObjectRegistry, Planet,
-    PlanetAtmosphere, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star, StarCluster,
-    StarSystem, StellarStage,
+    Asteroid, AsteroidBelt, CloudShock, Comet, CometCloud, DebrisDisk, GalacticComponent, Galaxy,
+    GasCloud, GasCloudKind, Moon, MoonFormationHistory, MoonOrigin, ObjectError, ObjectRegistry,
+    Planet, PlanetAtmosphere, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star,
+    StarCluster, StarSystem, StellarStage,
 };
 
 impl ObjectRegistry {
@@ -50,7 +50,7 @@ impl ObjectRegistry {
             let [x, y, z] = cloud.position.meters();
             writeln!(
                 output,
-                "H|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "H|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 cloud.id.value(),
                 cloud.galaxy_id.value(),
                 cloud.kind.code(),
@@ -64,6 +64,17 @@ impl ObjectRegistry {
                 float_bits(cloud.composition.oxygen_fraction()),
                 float_bits(cloud.composition.iron_fraction()),
                 float_bits(cloud.composition.other_metals_fraction()),
+                cloud.pending_shock.map_or(String::from("-"), |shock| shock
+                    .source_star_id
+                    .value()
+                    .to_string()),
+                cloud.pending_shock.map_or(String::from("-"), |shock| shock
+                    .arrived_at
+                    .seconds()
+                    .to_string()),
+                cloud
+                    .pending_shock
+                    .map_or(String::from("-"), |shock| float_bits(shock.strength)),
             )
             .expect("writing to a String cannot fail");
         }
@@ -71,14 +82,17 @@ impl ObjectRegistry {
             let [x, y, z] = cluster.position.meters();
             writeln!(
                 output,
-                "L|{}|{}|{}|{}|{}|{}|{}",
+                "L|{}|{}|{}|{}|{}|{}|{}|{}",
                 cluster.id.value(),
                 cluster.cloud_id.value(),
                 cluster.formed_at.seconds(),
                 float_bits(x),
                 float_bits(y),
                 float_bits(z),
-                encode_ids(&cluster.system_ids)
+                encode_ids(&cluster.system_ids),
+                cluster
+                    .triggering_star_id
+                    .map_or(String::from("-"), |id| id.value().to_string()),
             )
             .expect("writing to a String cannot fail");
         }
@@ -401,7 +415,12 @@ impl ObjectRegistry {
                     super::insert_unique(&mut registry.galaxies, galaxy.id, galaxy, "galaxy")?;
                 }
                 Some("H") => {
-                    require_field_count(&fields, 14, "gas cloud")?;
+                    if !matches!(fields.len(), 14 | 17) {
+                        return Err(ObjectError(format!(
+                            "gas-cloud record has {} fields; expected 14 or 17",
+                            fields.len()
+                        )));
+                    }
                     let cloud = GasCloud {
                         id: GasCloudId::new(parse_number(fields[1], "gas-cloud ID")?),
                         galaxy_id: GalaxyId::new(parse_number(fields[2], "galaxy ID")?),
@@ -418,11 +437,35 @@ impl ObjectRegistry {
                         )
                         .map_err(|error| ObjectError(error.to_string()))?,
                         cluster_ids: Vec::new(),
+                        pending_shock: if fields.len() == 17 {
+                            if fields[14] == "-" && fields[15] == "-" && fields[16] == "-" {
+                                None
+                            } else {
+                                Some(CloudShock {
+                                    source_star_id: StarId::new(parse_number(
+                                        fields[14],
+                                        "shock source star ID",
+                                    )?),
+                                    arrived_at: SimDuration::from_seconds(parse_number(
+                                        fields[15],
+                                        "shock arrival time",
+                                    )?),
+                                    strength: parse_float_bits(fields[16], "shock strength")?,
+                                })
+                            }
+                        } else {
+                            None
+                        },
                     };
                     super::insert_unique(&mut registry.gas_clouds, cloud.id, cloud, "gas cloud")?;
                 }
                 Some("L") => {
-                    require_field_count(&fields, 8, "star cluster")?;
+                    if !matches!(fields.len(), 8 | 9) {
+                        return Err(ObjectError(format!(
+                            "star-cluster record has {} fields; expected 8 or 9",
+                            fields.len()
+                        )));
+                    }
                     let cluster = StarCluster {
                         id: StarClusterId::new(parse_number(fields[1], "star-cluster ID")?),
                         cloud_id: GasCloudId::new(parse_number(fields[2], "gas-cloud ID")?),
@@ -432,6 +475,14 @@ impl ObjectRegistry {
                         )?),
                         position: parse_position(&fields[4..7])?,
                         system_ids: parse_ids(fields[7], StarSystemId::new)?,
+                        triggering_star_id: if fields.len() == 9 && fields[8] != "-" {
+                            Some(StarId::new(parse_number(
+                                fields[8],
+                                "cluster trigger star ID",
+                            )?))
+                        } else {
+                            None
+                        },
                     };
                     super::insert_unique(
                         &mut registry.star_clusters,

@@ -13,11 +13,11 @@ use crate::time::SimDuration;
 use crate::units::{METERS_PER_PARSEC, Mass, Position, Velocity};
 
 use super::{
-    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, DynamicsMode, GalacticComponent, Galaxy,
-    GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon, ObjectCounts, ObjectError,
-    ObjectId, ObjectRef, PARALLEL_SYSTEM_THRESHOLD, Planet, ProtoplanetaryDisk, Star, StarCluster,
-    StarSystem, StellarInteractionKind, StellarStage, StellarTransition, generation, insert_unique,
-    sample_stellar_mass, tick_at_or_after,
+    Asteroid, AsteroidBelt, CloudShock, Comet, CometCloud, DebrisDisk, DynamicsMode,
+    GalacticComponent, Galaxy, GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon,
+    ObjectCounts, ObjectError, ObjectId, ObjectRef, PARALLEL_SYSTEM_THRESHOLD, Planet,
+    ProtoplanetaryDisk, Star, StarCluster, StarSystem, StellarInteractionKind, StellarStage,
+    StellarTransition, generation, insert_unique, sample_stellar_mass, tick_at_or_after,
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -222,6 +222,7 @@ impl ObjectRegistry {
                     mass_solar,
                     composition: self.gas_composition,
                     cluster_ids: Vec::new(),
+                    pending_shock: None,
                 },
                 "gas cloud",
             )?;
@@ -248,6 +249,7 @@ impl ObjectRegistry {
                     formed_at: SimDuration::ZERO,
                     position,
                     system_ids: vec![system_id],
+                    triggering_star_id: None,
                 },
                 "star cluster",
             )?;
@@ -289,6 +291,7 @@ impl ObjectRegistry {
             mass_solar: self.gas_reservoir_solar_masses,
             composition: self.gas_composition,
             cluster_ids: Vec::new(),
+            pending_shock: None,
         };
         for system in self.star_systems.values_mut() {
             let cluster_id = StarClusterId::new(derive_object_seed(
@@ -307,6 +310,7 @@ impl ObjectRegistry {
                     formed_at: SimDuration::ZERO,
                     position: system.position,
                     system_ids: vec![system.id],
+                    triggering_star_id: None,
                 },
             );
             cloud.cluster_ids.push(cluster_id);
@@ -344,6 +348,63 @@ impl ObjectRegistry {
             .map_err(|error| ObjectError(error.to_string()))?;
         cloud.mass_solar += mass;
         self.refresh_gas_summary()
+    }
+
+    pub(super) fn apply_supernova_shock(
+        &mut self,
+        star_id: StarId,
+        event_time: SimDuration,
+        ejecta_solar_masses: f64,
+    ) -> Result<(), ObjectError> {
+        if !ejecta_solar_masses.is_finite() || ejecta_solar_masses < 0.0 {
+            return Err(ObjectError(
+                "supernova ejecta mass must be finite and nonnegative".to_owned(),
+            ));
+        }
+        if ejecta_solar_masses == 0.0 {
+            return Ok(());
+        }
+        let star = self
+            .stars
+            .get(&star_id)
+            .ok_or_else(|| ObjectError(format!("missing shock-source star {star_id}")))?;
+        let cluster_id = self.star_systems[&star.system_id]
+            .cluster_id
+            .ok_or_else(|| ObjectError("shock-source star has no cluster".to_owned()))?;
+        let source_cloud_id = self.star_clusters[&cluster_id].cloud_id;
+        let source_position = star.position.meters();
+        const SHOCK_RADIUS_METERS: f64 = 100.0 * METERS_PER_PARSEC;
+        for cloud in self.gas_clouds.values_mut() {
+            let [x, y, z] = cloud.position.meters();
+            let distance = ((x - source_position[0]).powi(2)
+                + (y - source_position[1]).powi(2)
+                + (z - source_position[2]).powi(2))
+            .sqrt();
+            if cloud.id != source_cloud_id && distance > SHOCK_RADIUS_METERS {
+                continue;
+            }
+            let attenuation = if cloud.id == source_cloud_id {
+                1.0
+            } else {
+                (1.0 - distance / SHOCK_RADIUS_METERS).powi(2)
+            };
+            let strength = (attenuation * ejecta_solar_masses
+                / (ejecta_solar_masses + cloud.mass_solar))
+                .clamp(0.0, 1.0);
+            if strength <= 0.0 {
+                continue;
+            }
+            let combined = cloud.pending_shock.map_or(strength, |previous| {
+                1.0 - (1.0 - previous.strength) * (1.0 - strength)
+            });
+            cloud.pending_shock = Some(CloudShock {
+                source_star_id: star_id,
+                arrived_at: event_time,
+                strength: combined,
+            });
+            cloud.kind = GasCloudKind::Molecular;
+        }
+        Ok(())
     }
 
     pub(crate) fn form_stars_between(
@@ -391,14 +452,25 @@ impl ObjectRegistry {
                 .values()
                 .filter(|cloud| cloud.kind == GasCloudKind::Molecular)
                 .max_by(|a, b| {
-                    a.mass_solar
-                        .total_cmp(&b.mass_solar)
+                    let budget = |cloud: &GasCloud| {
+                        cloud.mass_solar
+                            * (STAR_FORMATION_EFFICIENCY
+                                + cloud
+                                    .pending_shock
+                                    .map_or(0.0, |shock| 0.30 * shock.strength))
+                    };
+                    budget(a)
+                        .total_cmp(&budget(b))
                         .then_with(|| a.id.cmp(&b.id))
                 })
                 .cloned();
-            let available_stellar_mass = source
-                .as_ref()
-                .map_or(0.0, |cloud| cloud.mass_solar * STAR_FORMATION_EFFICIENCY);
+            let available_stellar_mass = source.as_ref().map_or(0.0, |cloud| {
+                cloud.mass_solar
+                    * (STAR_FORMATION_EFFICIENCY
+                        + cloud
+                            .pending_shock
+                            .map_or(0.0, |shock| 0.30 * shock.strength))
+            });
             let maximum_mass = config.star_mass_solar_max.min(available_stellar_mass);
             if maximum_mass < config.star_mass_solar_min {
                 // Skip empty collapse opportunities, but revisit after the next
@@ -444,9 +516,11 @@ impl ObjectRegistry {
                 formed_at: formation_time,
                 position: source.position,
                 system_ids: Vec::new(),
+                triggering_star_id: source.pending_shock.map(|shock| shock.source_star_id),
             };
             let mut remaining_budget = available_stellar_mass;
-            for member in 0..4_u64 {
+            let member_limit = if source.pending_shock.is_some() { 8 } else { 4 };
+            for member in 0..member_limit {
                 let remaining_cloud = self.gas_clouds[&source.id].mass_solar;
                 let maximum_mass = config
                     .star_mass_solar_max
@@ -455,18 +529,18 @@ impl ObjectRegistry {
                 if maximum_mass < config.star_mass_solar_min {
                     break;
                 }
-                let key = sequence.wrapping_mul(4).wrapping_add(member);
+                let key = sequence.wrapping_mul(8).wrapping_add(member);
                 let mut rng =
-                    StableRng::new(derive_object_seed(seed, key, "dynamic-star-formation-v2"));
+                    StableRng::new(derive_object_seed(seed, key, "dynamic-star-formation-v3"));
                 let mass_solar =
                     sample_stellar_mass(&mut rng, config.star_mass_solar_min, maximum_mass);
                 let system_id =
-                    StarSystemId::new(derive_object_seed(seed, key, "formed-star-system-id-v2"));
-                let star_id = StarId::new(derive_object_seed(seed, key, "formed-star-id-v2"));
+                    StarSystemId::new(derive_object_seed(seed, key, "formed-star-system-id-v3"));
+                let star_id = StarId::new(derive_object_seed(seed, key, "formed-star-id-v3"));
                 let disk_id = ProtoplanetaryDiskId::new(derive_object_seed(
                     seed,
                     key,
-                    "formed-protoplanetary-disk-id-v2",
+                    "formed-protoplanetary-disk-id-v3",
                 ));
                 if self.star_systems.contains_key(&system_id)
                     || self.stars.contains_key(&star_id)
@@ -566,6 +640,7 @@ impl ObjectRegistry {
                 .gas_clouds
                 .get_mut(&source.id)
                 .expect("source cloud exists");
+            cloud.pending_shock = None;
             cloud.cluster_ids.push(cluster_id);
             cloud.cluster_ids.sort_unstable();
             self.star_clusters.insert(cluster_id, cluster);

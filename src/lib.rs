@@ -22,7 +22,7 @@ pub use id::{
 };
 pub use matter::MatterInventory;
 pub use objects::{
-    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, DynamicsMode, Galaxy,
+    Asteroid, AsteroidBelt, CloudShock, Comet, CometCloud, DebrisDisk, DynamicsMode, Galaxy,
     GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon, MoonFormationHistory,
     MoonOrigin, ObjectCounts, ObjectId, ObjectRef, ObjectRegistry, Planet, PlanetAtmosphere,
     PlanetImpact, PlanetImpactKind, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star,

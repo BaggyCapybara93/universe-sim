@@ -499,12 +499,16 @@ impl ObjectRegistry {
                 )
                 .map_err(|_| TimeError::Overflow)?;
             }
-            self.return_gas(
-                star_id,
-                previous_mass.solar_masses() - mass.solar_masses(),
-                composition,
-            )
-            .map_err(|_| TimeError::Overflow)?;
+            let ejecta_solar_masses = previous_mass.solar_masses() - mass.solar_masses();
+            self.return_gas(star_id, ejecta_solar_masses, composition)
+                .map_err(|_| TimeError::Overflow)?;
+            if stage == StellarStage::Disrupted
+                || (from == StellarStage::CoreCollapseSupernova
+                    && matches!(stage, StellarStage::NeutronStar | StellarStage::BlackHole))
+            {
+                self.apply_supernova_shock(star_id, event_time, ejecta_solar_masses)
+                    .map_err(|_| TimeError::Overflow)?;
+            }
             let collision_impacts = self.apply_direct_planet_collisions(star_id, stage);
             let impacts = self.apply_stellar_impacts(star_id, previous_mass, mass, stage);
             transitions.push(StellarTransition {

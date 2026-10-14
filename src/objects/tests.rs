@@ -731,6 +731,135 @@ fn stellar_feedback_conserves_mass_enriches_gas_and_is_not_replayed() {
 }
 
 #[test]
+fn supernova_shock_triggers_extra_cluster_formation_across_checkpoints() {
+    let (mut shocked, config) = feedback_fixture(20.0, 0.014);
+    let tick = SimDuration::from_years(1).unwrap();
+    let collapse = stellar::stellar_schedule(Mass::from_solar_masses(20.0).unwrap(), 0.014)
+        .unwrap()
+        .into_iter()
+        .find(|(_, stage)| *stage == StellarStage::NeutronStar)
+        .unwrap()
+        .0;
+    let progenitor_id = shocked.stars().next().unwrap().id();
+    shocked.advance_stars_to(collapse, tick).unwrap();
+    let cloud_id = shocked.gas_clouds().next().unwrap().id();
+    let pending = shocked
+        .gas_cloud(cloud_id)
+        .unwrap()
+        .pending_shock()
+        .unwrap();
+    assert_eq!(pending.source_star_id(), progenitor_id);
+    assert_eq!(pending.arrived_at(), collapse);
+    assert!(pending.strength() > 0.0);
+
+    let mut encoded = String::new();
+    shocked.encode(&mut encoded);
+    assert_eq!(
+        ObjectRegistry::decode(encoded.lines().skip(1)).unwrap(),
+        shocked
+    );
+
+    let interval = SimDuration::from_years(10_000_000).unwrap();
+    let next_formation = SimDuration::from_seconds(
+        (collapse.seconds() / interval.seconds() + 1) * interval.seconds(),
+    );
+    let mut control = shocked.clone();
+    control.gas_clouds.get_mut(&cloud_id).unwrap().pending_shock = None;
+    let baseline_gas = shocked.gas_reservoir_solar_masses();
+    control
+        .form_stars_between(42, config, collapse, next_formation, tick)
+        .unwrap();
+    let events = shocked
+        .form_stars_between(42, config, collapse, next_formation, tick)
+        .unwrap();
+    let births: Vec<_> = events
+        .iter()
+        .filter(|event| event.interaction == Some(StellarInteractionKind::StarFormation))
+        .collect();
+    assert!(!births.is_empty());
+    assert!(shocked.gas_reservoir_solar_masses() < control.gas_reservoir_solar_masses());
+    assert!(shocked.gas_reservoir_solar_masses() < baseline_gas);
+    let cluster_id = shocked
+        .star_system(shocked.star(births[0].star_id).unwrap().system_id())
+        .unwrap()
+        .cluster_id()
+        .unwrap();
+    assert_eq!(
+        shocked
+            .star_cluster(cluster_id)
+            .unwrap()
+            .triggering_star_id(),
+        Some(progenitor_id)
+    );
+    assert!(
+        shocked
+            .gas_cloud(cloud_id)
+            .unwrap()
+            .pending_shock()
+            .is_none()
+    );
+
+    let mut split = ObjectRegistry::decode(encoded.lines().skip(1)).unwrap();
+    let midpoint = SimDuration::from_seconds((collapse.seconds() + next_formation.seconds()) / 2);
+    split
+        .form_stars_between(42, config, collapse, midpoint, tick)
+        .unwrap();
+    split = {
+        let mut state = String::new();
+        split.encode(&mut state);
+        ObjectRegistry::decode(state.lines().skip(1)).unwrap()
+    };
+    split
+        .form_stars_between(42, config, midpoint, next_formation, tick)
+        .unwrap();
+    assert_eq!(split, shocked);
+}
+
+#[test]
+fn supernova_shock_compresses_a_nearby_diffuse_cloud() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 32;
+    let mut objects = ObjectRegistry::generate(42, config).unwrap();
+    let diffuse_id = objects
+        .gas_clouds()
+        .find(|cloud| cloud.kind() == GasCloudKind::Diffuse)
+        .unwrap()
+        .id();
+    let source_id = objects
+        .gas_clouds()
+        .find(|cloud| cloud.kind() == GasCloudKind::Molecular)
+        .unwrap()
+        .id();
+    let source_star_id = objects
+        .star_systems()
+        .find(|system| {
+            objects
+                .star_cluster(system.cluster_id().unwrap())
+                .unwrap()
+                .cloud_id()
+                == source_id
+        })
+        .unwrap()
+        .star_id();
+    let source_position = objects.star(source_star_id).unwrap().position();
+    objects.gas_clouds.get_mut(&diffuse_id).unwrap().position = source_position;
+    objects
+        .apply_supernova_shock(
+            source_star_id,
+            SimDuration::from_years(1_000_000).unwrap(),
+            10.0,
+        )
+        .unwrap();
+    let diffuse = objects.gas_cloud(diffuse_id).unwrap();
+    assert_eq!(diffuse.kind(), GasCloudKind::Molecular);
+    assert_eq!(
+        diffuse.pending_shock().unwrap().source_star_id(),
+        source_star_id
+    );
+    objects.validate().unwrap();
+}
+
+#[test]
 fn formation_inherits_all_gas_components_and_accounts_for_disk_mass() {
     let (mut objects, config) = feedback_fixture(0.1, 0.014);
     let composition = crate::GasComposition::new(0.68, 0.28, 0.01, 0.015, 0.005, 0.01).unwrap();

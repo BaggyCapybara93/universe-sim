@@ -23,6 +23,19 @@ impl ObjectRegistry {
                 .composition
                 .validate()
                 .map_err(|error| ObjectError(error.to_string()))?;
+            if let Some(shock) = cloud.pending_shock {
+                if !shock.strength.is_finite()
+                    || !(0.0..=1.0).contains(&shock.strength)
+                    || shock.strength == 0.0
+                {
+                    return Err(ObjectError(format!("{cloud_id} has invalid pending shock")));
+                }
+                if cloud.kind != super::GasCloudKind::Molecular {
+                    return Err(ObjectError(format!(
+                        "{cloud_id} has a shock but is not molecular"
+                    )));
+                }
+            }
             if !self.galaxies.contains_key(&cloud.galaxy_id) {
                 return Err(ObjectError(format!(
                     "{cloud_id} references missing galaxy {}",

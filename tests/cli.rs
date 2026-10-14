@@ -228,7 +228,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=14", "state_format_version=99");
+        .replace("state_format_version=15", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

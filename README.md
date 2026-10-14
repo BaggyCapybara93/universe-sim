@@ -232,6 +232,10 @@ continue under the new rules; historical mass loss is not deposited again.
   replenish and enrich the source cloud. Existing generated systems receive
   individual historical clusters so their ancestry remains inspectable.
   Follow a planet's system to its cluster and source cloud with `inspect`.
+  Core-collapse and pair-instability supernova ejecta can compress the source
+  cloud and nearby clouds. A pending shock increases the next collapse's gas
+  budget and sibling-system limit; the resulting cluster records its triggering
+  star. Shock state and its causal link survive save/load cycles.
 - Evolved stars in binaries are checked against their periastron Roche lobes.
   Stable overflow transfers mass with partial retention; contact systems and
   sufficiently unstable mass ratios merge, remove the consumed companion, and
