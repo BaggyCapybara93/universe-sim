@@ -4,6 +4,18 @@ use crate::id::GalaxyId;
 use crate::orbital::OrbitalElements;
 use crate::units::{Angle, Length, Mass, Position};
 
+fn set_test_gas(objects: &mut ObjectRegistry, mass: f64, composition: crate::GasComposition) {
+    let cloud = objects
+        .gas_clouds
+        .values_mut()
+        .next()
+        .expect("test cloud exists");
+    cloud.mass_solar = mass;
+    cloud.composition = composition;
+    objects.gas_reservoir_solar_masses = mass;
+    objects.gas_composition = composition;
+}
+
 #[test]
 fn generation_is_deterministic_and_relationships_are_valid() {
     let first = ObjectRegistry::generate(42, GenerationConfig::DEFAULT).unwrap();
@@ -193,18 +205,135 @@ fn gas_reservoir_forms_a_persisted_protostar_system() {
             SimDuration::from_years(1_000).unwrap(),
         )
         .unwrap();
-    assert_eq!(events.len(), 1);
+    assert!(events.len() > 1);
     assert_eq!(
         events[0].interaction,
         Some(StellarInteractionKind::StarFormation)
     );
-    assert_eq!(objects.counts().star_systems, initial_systems + 1);
+    assert_eq!(
+        objects.counts().star_systems,
+        initial_systems + events.len()
+    );
+    let cluster_id = objects
+        .star_system(objects.star(events[0].star_id).unwrap().system_id())
+        .unwrap()
+        .cluster_id()
+        .unwrap();
+    let cluster = objects.star_cluster(cluster_id).unwrap();
+    assert_eq!(cluster.system_ids().len(), events.len());
+    assert!(events.iter().all(|event| {
+        objects
+            .star_system(objects.star(event.star_id).unwrap().system_id())
+            .unwrap()
+            .cluster_id()
+            == Some(cluster_id)
+    }));
+    assert_eq!(
+        objects.gas_cloud(cluster.cloud_id()).unwrap().kind(),
+        GasCloudKind::Molecular
+    );
     assert!(objects.gas_reservoir_solar_masses() < initial_gas);
     assert_eq!(objects.gas_composition(), initial_composition);
     assert_eq!(
         objects.star(events[0].star_id).unwrap().formed_at(),
         ten_myr
     );
+    let mut encoded = String::new();
+    objects.encode(&mut encoded);
+    assert_eq!(
+        ObjectRegistry::decode(encoded.lines().skip(1)).unwrap(),
+        objects
+    );
+}
+
+#[test]
+fn clouds_enrich_independently_and_planets_retain_cluster_ancestry() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 32;
+    config.star_mass_solar_min = 0.1;
+    config.star_mass_solar_max = 0.2;
+    config.planets_per_system_min = 1;
+    config.planets_per_system_max = 1;
+    let mut objects = ObjectRegistry::generate(42, config).unwrap();
+    assert_eq!(objects.counts().gas_clouds, 4);
+    assert!(
+        objects
+            .gas_clouds()
+            .any(|cloud| cloud.kind() == GasCloudKind::Diffuse)
+    );
+    let cloud_id = objects
+        .gas_clouds()
+        .find(|cloud| cloud.kind() == GasCloudKind::Molecular)
+        .unwrap()
+        .id();
+    let original_other_clouds: Vec<_> = objects
+        .gas_clouds()
+        .filter(|cloud| cloud.id() != cloud_id)
+        .cloned()
+        .collect();
+    let source_star_id = objects
+        .star_systems()
+        .find(|system| {
+            objects
+                .star_cluster(system.cluster_id().unwrap())
+                .unwrap()
+                .cloud_id()
+                == cloud_id
+        })
+        .unwrap()
+        .star_id();
+    let ejecta = crate::GasComposition::from_metallicity(0.05).unwrap();
+    objects.return_gas(source_star_id, 1.0, ejecta).unwrap();
+    assert!(
+        objects
+            .gas_cloud(cloud_id)
+            .unwrap()
+            .composition()
+            .metallicity()
+            > 0.014
+    );
+    for original in original_other_clouds {
+        assert_eq!(objects.gas_cloud(original.id()).unwrap(), &original);
+    }
+    let birth_composition = objects.gas_cloud(cloud_id).unwrap().composition();
+    let ten_myr = SimDuration::from_years(10_000_000).unwrap();
+    let events = objects
+        .form_stars_between(
+            42,
+            config,
+            SimDuration::ZERO,
+            ten_myr,
+            SimDuration::from_years(1_000).unwrap(),
+        )
+        .unwrap();
+    assert!(events.len() > 1);
+    let cluster_id = objects
+        .star_system(objects.star(events[0].star_id).unwrap().system_id())
+        .unwrap()
+        .cluster_id()
+        .unwrap();
+    let cluster = objects.star_cluster(cluster_id).unwrap();
+    assert_eq!(cluster.cloud_id(), cloud_id);
+    assert_eq!(cluster.system_ids().len(), events.len());
+    for event in &events {
+        let star = objects.star(event.star_id).unwrap();
+        assert_eq!(star.birth_composition(), birth_composition);
+        assert_eq!(
+            objects.star_system(star.system_id()).unwrap().cluster_id(),
+            Some(cluster_id)
+        );
+    }
+    objects
+        .advance_planetary_formation_to(42, config, SimDuration::from_years(15_000_000).unwrap())
+        .unwrap();
+    for system_id in objects.star_cluster(cluster_id).unwrap().system_ids() {
+        let system = objects.star_system(*system_id).unwrap();
+        assert_eq!(system.planet_ids().len(), 1);
+        let planet = objects.planet(system.planet_ids()[0]).unwrap();
+        assert_eq!(planet.system_id(), *system_id);
+        assert_eq!(planet.star_id(), system.star_id());
+    }
+    objects.validate().unwrap();
     let mut encoded = String::new();
     objects.encode(&mut encoded);
     assert_eq!(
@@ -547,8 +676,11 @@ fn feedback_fixture(mass_solar: f64, metallicity: f64) -> (ObjectRegistry, Gener
     .unwrap();
     objects.stars.clear();
     objects.stars.insert(star_id, star);
-    objects.gas_reservoir_solar_masses = 0.0;
-    objects.gas_composition = crate::GasComposition::from_metallicity(metallicity).unwrap();
+    set_test_gas(
+        &mut objects,
+        0.0,
+        crate::GasComposition::from_metallicity(metallicity).unwrap(),
+    );
     (objects, config)
 }
 
@@ -602,8 +734,7 @@ fn stellar_feedback_conserves_mass_enriches_gas_and_is_not_replayed() {
 fn formation_inherits_all_gas_components_and_accounts_for_disk_mass() {
     let (mut objects, config) = feedback_fixture(0.1, 0.014);
     let composition = crate::GasComposition::new(0.68, 0.28, 0.01, 0.015, 0.005, 0.01).unwrap();
-    objects.gas_composition = composition;
-    objects.gas_reservoir_solar_masses = 10.0;
+    set_test_gas(&mut objects, 10.0, composition);
     let before = stellar_and_gas_mass(&objects)
         + objects
             .protoplanetary_disks()
@@ -796,7 +927,8 @@ fn matter_inventory_accounts_for_star_formation_and_feedback_over_ten_billion_ye
 
     // In a second closed setup, gas and disk metal mass transfer into a new star.
     let (mut forming, _) = feedback_fixture(0.1, 0.014);
-    forming.gas_reservoir_solar_masses = 10.0;
+    let composition = forming.gas_composition();
+    set_test_gas(&mut forming, 10.0, composition);
     let initial = forming.matter_inventory();
     forming
         .form_stars_between(

@@ -13,6 +13,104 @@ impl ObjectRegistry {
         self.gas_composition
             .validate()
             .map_err(|error| ObjectError(error.to_string()))?;
+        let mut cloud_mass = 0.0;
+        let mut cloud_mix = self.gas_composition;
+        for (cloud_id, cloud) in &self.gas_clouds {
+            if *cloud_id != cloud.id || !cloud.mass_solar.is_finite() || cloud.mass_solar < 0.0 {
+                return Err(ObjectError(format!("invalid gas cloud {cloud_id}")));
+            }
+            cloud
+                .composition
+                .validate()
+                .map_err(|error| ObjectError(error.to_string()))?;
+            if !self.galaxies.contains_key(&cloud.galaxy_id) {
+                return Err(ObjectError(format!(
+                    "{cloud_id} references missing galaxy {}",
+                    cloud.galaxy_id
+                )));
+            }
+            ensure_unique(&cloud.cluster_ids, "gas-cloud cluster relationship")?;
+            for cluster_id in &cloud.cluster_ids {
+                let cluster = self.star_clusters.get(cluster_id).ok_or_else(|| {
+                    ObjectError(format!("{cloud_id} references missing {cluster_id}"))
+                })?;
+                if cluster.cloud_id != *cloud_id {
+                    return Err(ObjectError(format!(
+                        "{cluster_id} does not point back to {cloud_id}"
+                    )));
+                }
+            }
+            if cloud.mass_solar > 0.0 {
+                cloud_mix = cloud_mix
+                    .mixed_with(cloud_mass, cloud.composition, cloud.mass_solar)
+                    .map_err(|error| ObjectError(error.to_string()))?;
+                cloud_mass += cloud.mass_solar;
+            }
+        }
+        if (cloud_mass - self.gas_reservoir_solar_masses).abs() > 1e-9 * cloud_mass.max(1.0) {
+            return Err(ObjectError(
+                "gas-cloud mass differs from aggregate gas mass".to_owned(),
+            ));
+        }
+        let expected = [
+            cloud_mix.hydrogen_fraction(),
+            cloud_mix.helium_fraction(),
+            cloud_mix.carbon_fraction(),
+            cloud_mix.oxygen_fraction(),
+            cloud_mix.iron_fraction(),
+            cloud_mix.other_metals_fraction(),
+        ];
+        let actual = [
+            self.gas_composition.hydrogen_fraction(),
+            self.gas_composition.helium_fraction(),
+            self.gas_composition.carbon_fraction(),
+            self.gas_composition.oxygen_fraction(),
+            self.gas_composition.iron_fraction(),
+            self.gas_composition.other_metals_fraction(),
+        ];
+        if cloud_mass > 0.0
+            && expected
+                .iter()
+                .zip(actual)
+                .any(|(a, b)| (a - b).abs() > 1e-9)
+        {
+            return Err(ObjectError(
+                "gas-cloud composition differs from aggregate gas composition".to_owned(),
+            ));
+        }
+        for (cluster_id, cluster) in &self.star_clusters {
+            if *cluster_id != cluster.id {
+                return Err(ObjectError(
+                    "star-cluster registry key does not match its ID".to_owned(),
+                ));
+            }
+            let cloud = self.gas_clouds.get(&cluster.cloud_id).ok_or_else(|| {
+                ObjectError(format!(
+                    "{cluster_id} references missing gas cloud {}",
+                    cluster.cloud_id
+                ))
+            })?;
+            if !cloud.cluster_ids.contains(cluster_id) {
+                return Err(ObjectError(format!(
+                    "{} does not list child {cluster_id}",
+                    cluster.cloud_id
+                )));
+            }
+            ensure_unique(&cluster.system_ids, "star-cluster system relationship")?;
+            if cluster.system_ids.is_empty() {
+                return Err(ObjectError(format!("{cluster_id} has no systems")));
+            }
+            for system_id in &cluster.system_ids {
+                let system = self.star_systems.get(system_id).ok_or_else(|| {
+                    ObjectError(format!("{cluster_id} references missing {system_id}"))
+                })?;
+                if system.cluster_id != Some(*cluster_id) || system.galaxy_id != cloud.galaxy_id {
+                    return Err(ObjectError(format!(
+                        "{system_id} has inconsistent cluster ancestry"
+                    )));
+                }
+            }
+        }
         for (galaxy_id, galaxy) in &self.galaxies {
             if *galaxy_id != galaxy.id {
                 return Err(ObjectError(
@@ -37,6 +135,18 @@ impl ObjectRegistry {
                 return Err(ObjectError(
                     "star-system registry key does not match its ID".to_owned(),
                 ));
+            }
+            let cluster_id = system
+                .cluster_id
+                .ok_or_else(|| ObjectError(format!("{system_id} has no source cluster")))?;
+            if !self
+                .star_clusters
+                .get(&cluster_id)
+                .is_some_and(|cluster| cluster.system_ids.contains(system_id))
+            {
+                return Err(ObjectError(format!(
+                    "{system_id} references missing source cluster {cluster_id}"
+                )));
             }
             ensure_unique(&system.planet_ids, "star-system planet relationship")?;
             let galaxy = self.galaxies.get(&system.galaxy_id).ok_or_else(|| {

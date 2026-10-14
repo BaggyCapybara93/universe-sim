@@ -2,8 +2,8 @@ use std::fmt;
 
 use crate::chemistry::GasComposition;
 use crate::id::{
-    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
-    ProtoplanetaryDiskId, StarId, StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, GasCloudId, MoonId,
+    PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId,
 };
 use crate::orbital::OrbitalElements;
 use crate::rng::{StableRng, derive_object_seed};
@@ -127,10 +127,96 @@ impl Galaxy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GasCloudKind {
+    Diffuse,
+    Molecular,
+}
+
+impl GasCloudKind {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Diffuse => "D",
+            Self::Molecular => "M",
+        }
+    }
+
+    pub(crate) fn parse_code(value: &str) -> Result<Self, ObjectError> {
+        match value {
+            "D" => Ok(Self::Diffuse),
+            "M" => Ok(Self::Molecular),
+            _ => Err(ObjectError(format!("unknown gas-cloud kind '{value}'"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GasCloud {
+    pub(super) id: GasCloudId,
+    pub(super) galaxy_id: GalaxyId,
+    pub(super) kind: GasCloudKind,
+    pub(super) position: Position,
+    pub(super) mass_solar: f64,
+    pub(super) composition: GasComposition,
+    pub(super) cluster_ids: Vec<StarClusterId>,
+}
+
+impl GasCloud {
+    pub const fn id(&self) -> GasCloudId {
+        self.id
+    }
+    pub const fn galaxy_id(&self) -> GalaxyId {
+        self.galaxy_id
+    }
+    pub const fn kind(&self) -> GasCloudKind {
+        self.kind
+    }
+    pub const fn position(&self) -> Position {
+        self.position
+    }
+    pub const fn mass_solar(&self) -> f64 {
+        self.mass_solar
+    }
+    pub const fn composition(&self) -> GasComposition {
+        self.composition
+    }
+    pub fn cluster_ids(&self) -> &[StarClusterId] {
+        &self.cluster_ids
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StarCluster {
+    pub(super) id: StarClusterId,
+    pub(super) cloud_id: GasCloudId,
+    pub(super) formed_at: SimDuration,
+    pub(super) position: Position,
+    pub(super) system_ids: Vec<StarSystemId>,
+}
+
+impl StarCluster {
+    pub const fn id(&self) -> StarClusterId {
+        self.id
+    }
+    pub const fn cloud_id(&self) -> GasCloudId {
+        self.cloud_id
+    }
+    pub const fn formed_at(&self) -> SimDuration {
+        self.formed_at
+    }
+    pub const fn position(&self) -> Position {
+        self.position
+    }
+    pub fn system_ids(&self) -> &[StarSystemId] {
+        &self.system_ids
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StarSystem {
     pub(super) id: StarSystemId,
     pub(super) galaxy_id: GalaxyId,
+    pub(super) cluster_id: Option<StarClusterId>,
     pub(super) position: Position,
     pub(super) velocity: Velocity,
     pub(super) star_id: StarId,
@@ -153,6 +239,10 @@ impl StarSystem {
 
     pub const fn galaxy_id(&self) -> GalaxyId {
         self.galaxy_id
+    }
+
+    pub const fn cluster_id(&self) -> Option<StarClusterId> {
+        self.cluster_id
     }
 
     pub const fn position(&self) -> Position {
@@ -1076,6 +1166,8 @@ impl DebrisDisk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectCounts {
     pub galaxies: usize,
+    pub gas_clouds: usize,
+    pub star_clusters: usize,
     pub star_systems: usize,
     pub stars: usize,
     pub planets: usize,

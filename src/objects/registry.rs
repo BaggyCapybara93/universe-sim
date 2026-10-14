@@ -5,8 +5,8 @@ use rayon::prelude::*;
 use crate::chemistry::GasComposition;
 use crate::config::GenerationConfig;
 use crate::id::{
-    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
-    ProtoplanetaryDiskId, StarId, StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, GasCloudId, MoonId,
+    PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId,
 };
 use crate::rng::{StableRng, derive_object_seed};
 use crate::time::SimDuration;
@@ -14,15 +14,17 @@ use crate::units::{METERS_PER_PARSEC, Mass, Position, Velocity};
 
 use super::{
     Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, DynamicsMode, GalacticComponent, Galaxy,
-    GalaxyCatalogEntry, GalaxyMorphology, Moon, ObjectCounts, ObjectError, ObjectId, ObjectRef,
-    PARALLEL_SYSTEM_THRESHOLD, Planet, ProtoplanetaryDisk, Star, StarSystem,
-    StellarInteractionKind, StellarStage, StellarTransition, generation, insert_unique,
+    GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon, ObjectCounts, ObjectError,
+    ObjectId, ObjectRef, PARALLEL_SYSTEM_THRESHOLD, Planet, ProtoplanetaryDisk, Star, StarCluster,
+    StarSystem, StellarInteractionKind, StellarStage, StellarTransition, generation, insert_unique,
     sample_stellar_mass, tick_at_or_after,
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObjectRegistry {
     pub(crate) galaxies: BTreeMap<GalaxyId, Galaxy>,
+    pub(crate) gas_clouds: BTreeMap<GasCloudId, GasCloud>,
+    pub(crate) star_clusters: BTreeMap<StarClusterId, StarCluster>,
     pub(crate) star_systems: BTreeMap<StarSystemId, StarSystem>,
     pub(crate) stars: BTreeMap<StarId, Star>,
     pub(crate) planets: BTreeMap<PlanetId, Planet>,
@@ -132,6 +134,7 @@ impl ObjectRegistry {
         registry.gas_reservoir_solar_masses = f64::from(config.star_systems) * gas_factor;
         registry.gas_composition = GasComposition::from_metallicity(gas_metallicity)
             .map_err(|error| ObjectError(error.to_string()))?;
+        registry.seed_clouds_and_ancestry(seed, galaxy_id, config.star_systems)?;
         registry.validate()?;
         Ok(registry)
     }
@@ -139,6 +142,8 @@ impl ObjectRegistry {
     pub fn counts(&self) -> ObjectCounts {
         ObjectCounts {
             galaxies: self.galaxies.len(),
+            gas_clouds: self.gas_clouds.len(),
+            star_clusters: self.star_clusters.len(),
             star_systems: self.star_systems.len(),
             stars: self.stars.len(),
             planets: self.planets.len(),
@@ -149,7 +154,11 @@ impl ObjectRegistry {
             comet_clouds: self.comet_clouds.len(),
             debris_disks: self.debris_disks.len(),
             protoplanetary_disks: self.protoplanetary_disks.len(),
-            gas_reservoirs: usize::from(self.gas_reservoir_solar_masses > 0.0),
+            gas_reservoirs: self
+                .gas_clouds
+                .values()
+                .filter(|cloud| cloud.mass_solar > 0.0)
+                .count(),
         }
     }
 
@@ -161,20 +170,180 @@ impl ObjectRegistry {
         self.gas_composition
     }
 
+    fn refresh_gas_summary(&mut self) -> Result<(), ObjectError> {
+        let mut total = 0.0;
+        let mut mixture = self.gas_composition;
+        for cloud in self.gas_clouds.values() {
+            if cloud.mass_solar > 0.0 {
+                mixture = mixture
+                    .mixed_with(total, cloud.composition, cloud.mass_solar)
+                    .map_err(|error| ObjectError(error.to_string()))?;
+                total += cloud.mass_solar;
+            }
+        }
+        self.gas_reservoir_solar_masses = total;
+        if total > 0.0 {
+            self.gas_composition = mixture;
+        }
+        Ok(())
+    }
+
+    fn seed_clouds_and_ancestry(
+        &mut self,
+        seed: u64,
+        galaxy_id: GalaxyId,
+        systems: u32,
+    ) -> Result<(), ObjectError> {
+        let cloud_count = (systems.div_ceil(8) as usize).clamp(1, 16);
+        let total = self.gas_reservoir_solar_masses;
+        for index in 0..cloud_count {
+            let id = GasCloudId::new(derive_object_seed(seed, index as u64, "gas-cloud-id-v1"));
+            let system = self.star_systems.values().nth(index);
+            let position =
+                system.map_or(self.galaxies[&galaxy_id].position, |system| system.position);
+            let kind = if cloud_count > 1 && index % 4 == 3 {
+                GasCloudKind::Diffuse
+            } else {
+                GasCloudKind::Molecular
+            };
+            let mass_solar = if index + 1 == cloud_count {
+                total - total * (index as f64 / cloud_count as f64)
+            } else {
+                total / cloud_count as f64
+            };
+            insert_unique(
+                &mut self.gas_clouds,
+                id,
+                GasCloud {
+                    id,
+                    galaxy_id,
+                    kind,
+                    position,
+                    mass_solar,
+                    composition: self.gas_composition,
+                    cluster_ids: Vec::new(),
+                },
+                "gas cloud",
+            )?;
+        }
+        let ids: Vec<_> = self.star_systems.keys().copied().collect();
+        for (index, system_id) in ids.into_iter().enumerate() {
+            let cloud_id = *self
+                .gas_clouds
+                .keys()
+                .nth(index % cloud_count)
+                .expect("cloud exists");
+            let cluster_id = StarClusterId::new(derive_object_seed(
+                seed,
+                system_id.value(),
+                "initial-star-cluster-id-v1",
+            ));
+            let position = self.star_systems[&system_id].position;
+            insert_unique(
+                &mut self.star_clusters,
+                cluster_id,
+                StarCluster {
+                    id: cluster_id,
+                    cloud_id,
+                    formed_at: SimDuration::ZERO,
+                    position,
+                    system_ids: vec![system_id],
+                },
+                "star cluster",
+            )?;
+            self.gas_clouds
+                .get_mut(&cloud_id)
+                .expect("cloud exists")
+                .cluster_ids
+                .push(cluster_id);
+            self.star_systems
+                .get_mut(&system_id)
+                .expect("system exists")
+                .cluster_id = Some(cluster_id);
+        }
+        for cloud in self.gas_clouds.values_mut() {
+            cloud.cluster_ids.sort_unstable();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn attach_legacy_ancestry(&mut self) -> Result<(), ObjectError> {
+        if !self.gas_clouds.is_empty() {
+            return Ok(());
+        }
+        let galaxy_id = *self
+            .galaxies
+            .keys()
+            .next()
+            .ok_or_else(|| ObjectError("legacy objects have no galaxy".to_owned()))?;
+        let cloud_id = GasCloudId::new(derive_object_seed(
+            galaxy_id.value(),
+            0,
+            "legacy-gas-cloud-id-v1",
+        ));
+        let mut cloud = GasCloud {
+            id: cloud_id,
+            galaxy_id,
+            kind: GasCloudKind::Molecular,
+            position: self.galaxies[&galaxy_id].position,
+            mass_solar: self.gas_reservoir_solar_masses,
+            composition: self.gas_composition,
+            cluster_ids: Vec::new(),
+        };
+        for system in self.star_systems.values_mut() {
+            let cluster_id = StarClusterId::new(derive_object_seed(
+                system.id.value(),
+                0,
+                "legacy-star-cluster-id-v1",
+            ));
+            if self.star_clusters.contains_key(&cluster_id) {
+                return Err(ObjectError("legacy cluster ID collision".to_owned()));
+            }
+            self.star_clusters.insert(
+                cluster_id,
+                StarCluster {
+                    id: cluster_id,
+                    cloud_id,
+                    formed_at: SimDuration::ZERO,
+                    position: system.position,
+                    system_ids: vec![system.id],
+                },
+            );
+            cloud.cluster_ids.push(cluster_id);
+            system.cluster_id = Some(cluster_id);
+        }
+        self.gas_clouds.insert(cloud_id, cloud);
+        Ok(())
+    }
+
     pub(super) fn return_gas(
         &mut self,
+        star_id: StarId,
         mass: f64,
         composition: GasComposition,
     ) -> Result<(), ObjectError> {
         if mass == 0.0 {
             return Ok(());
         }
-        self.gas_composition = self
-            .gas_composition
-            .mixed_with(self.gas_reservoir_solar_masses, composition, mass)
+        let system_id = self
+            .stars
+            .get(&star_id)
+            .ok_or_else(|| ObjectError(format!("missing gas-source star {star_id}")))?
+            .system_id;
+        let cluster_id = self.star_systems[&system_id]
+            .cluster_id
+            .ok_or_else(|| ObjectError("star has no source cluster".to_owned()))?;
+        let cloud_id = self.star_clusters[&cluster_id].cloud_id;
+        let cloud = self
+            .gas_clouds
+            .get_mut(&cloud_id)
+            .expect("source cloud exists");
+        cloud.composition = cloud
+            .composition
+            .mixed_with(cloud.mass_solar, composition, mass)
             .map_err(|error| ObjectError(error.to_string()))?;
-        self.gas_reservoir_solar_masses += mass;
-        Ok(())
+        cloud.mass_solar += mass;
+        self.refresh_gas_summary()
     }
 
     pub(crate) fn form_stars_between(
@@ -217,13 +386,19 @@ impl ObjectRegistry {
                 self.advance_stars_to(formation_time, tick_duration)
                     .map_err(|error| ObjectError(error.to_string()))?,
             );
-            let mut rng = StableRng::new(derive_object_seed(
-                seed,
-                sequence,
-                "dynamic-star-formation-v1",
-            ));
-            let available_stellar_mass =
-                self.gas_reservoir_solar_masses * STAR_FORMATION_EFFICIENCY;
+            let source = self
+                .gas_clouds
+                .values()
+                .filter(|cloud| cloud.kind == GasCloudKind::Molecular)
+                .max_by(|a, b| {
+                    a.mass_solar
+                        .total_cmp(&b.mass_solar)
+                        .then_with(|| a.id.cmp(&b.id))
+                })
+                .cloned();
+            let available_stellar_mass = source
+                .as_ref()
+                .map_or(0.0, |cloud| cloud.mass_solar * STAR_FORMATION_EFFICIENCY);
             let maximum_mass = config.star_mass_solar_max.min(available_stellar_mass);
             if maximum_mass < config.star_mass_solar_min {
                 // Skip empty collapse opportunities, but revisit after the next
@@ -240,112 +415,160 @@ impl ObjectRegistry {
                 );
                 continue;
             }
-            let mass_solar =
-                sample_stellar_mass(&mut rng, config.star_mass_solar_min, maximum_mass);
-            let system_id = StarSystemId::new(derive_object_seed(
+            let source = source.expect("eligible source cloud exists");
+            let cluster_id = StarClusterId::new(derive_object_seed(
                 seed,
                 sequence,
-                "formed-star-system-id-v1",
+                "formed-star-cluster-id-v1",
             ));
-            let star_id = StarId::new(derive_object_seed(seed, sequence, "formed-star-id-v1"));
-            if self.star_systems.contains_key(&system_id) || self.stars.contains_key(&star_id) {
-                return Err(ObjectError(
-                    "dynamic star-formation ID collision".to_owned(),
-                ));
+            if self.star_clusters.contains_key(&cluster_id) {
+                return Err(ObjectError("dynamic star-cluster ID collision".to_owned()));
             }
-            let radius = config.galaxy_radius_parsecs * METERS_PER_PARSEC * rng.next_f64().sqrt();
-            let angle = std::f64::consts::TAU * rng.next_f64();
-            let (sin_angle, cos_angle) = angle.sin_cos();
-            let [gx, gy, gz] = self
+            let [cx, cy, cz] = source.position.meters();
+            let [gx, gy, _gz] = self
                 .galaxies
                 .get(&galaxy_id)
                 .expect("formation galaxy exists")
                 .position
                 .meters();
-            let position =
-                Position::from_meters(gx + radius * cos_angle, gy + radius * sin_angle, gz)?;
+            let angle = (cy - gy).atan2(cx - gx);
+            let (sin_angle, cos_angle) = angle.sin_cos();
             let velocity = Velocity::from_meters_per_second(
                 -220_000.0 * sin_angle,
                 220_000.0 * cos_angle,
                 0.0,
             )?;
-            let mut star = generation::generate_star_with_birth(
-                star_id,
-                system_id,
-                formation_time,
-                self.gas_composition,
-                mass_solar,
-            )?;
-            star.position = position;
-            star.velocity = velocity;
-            self.stars.insert(star_id, star);
-            let disk_id = ProtoplanetaryDiskId::new(derive_object_seed(
-                seed,
-                sequence,
-                "formed-protoplanetary-disk-id-v1",
-            ));
-            let mut disk = super::planetary::generate_protoplanetary_disk(
-                disk_id,
-                system_id,
-                Mass::from_solar_masses(mass_solar)?,
-                SimDuration::ZERO,
-                &mut rng,
-            )?;
-            disk.formed_at = formation_time;
-            disk.initial_mass = Mass::from_solar_masses(
-                disk.initial_mass
-                    .solar_masses()
-                    .min((self.gas_reservoir_solar_masses - mass_solar).max(0.0)),
-            )?;
-            disk.remaining_mass = disk.initial_mass;
-            disk.dissipates_at = formation_time
-                .checked_add(
-                    SimDuration::from_years(10_000_000)
-                        .map_err(|error| ObjectError(error.to_string()))?,
-                )
-                .ok_or_else(|| ObjectError("protoplanetary disk lifetime overflow".to_owned()))?;
-            // Efficiency limits the collapsing mass; unused gas remains in the
-            // reservoir instead of disappearing. Fund the disk as well as the star.
-            let gas_consumed = mass_solar + disk.initial_mass.solar_masses();
-            self.protoplanetary_disks.insert(disk_id, disk);
-            self.star_systems.insert(
-                system_id,
-                StarSystem {
-                    id: system_id,
-                    galaxy_id,
-                    position,
-                    velocity,
+            let mut cluster = StarCluster {
+                id: cluster_id,
+                cloud_id: source.id,
+                formed_at: formation_time,
+                position: source.position,
+                system_ids: Vec::new(),
+            };
+            let mut remaining_budget = available_stellar_mass;
+            for member in 0..4_u64 {
+                let remaining_cloud = self.gas_clouds[&source.id].mass_solar;
+                let maximum_mass = config
+                    .star_mass_solar_max
+                    .min(remaining_budget)
+                    .min(remaining_cloud);
+                if maximum_mass < config.star_mass_solar_min {
+                    break;
+                }
+                let key = sequence.wrapping_mul(4).wrapping_add(member);
+                let mut rng =
+                    StableRng::new(derive_object_seed(seed, key, "dynamic-star-formation-v2"));
+                let mass_solar =
+                    sample_stellar_mass(&mut rng, config.star_mass_solar_min, maximum_mass);
+                let system_id =
+                    StarSystemId::new(derive_object_seed(seed, key, "formed-star-system-id-v2"));
+                let star_id = StarId::new(derive_object_seed(seed, key, "formed-star-id-v2"));
+                let disk_id = ProtoplanetaryDiskId::new(derive_object_seed(
+                    seed,
+                    key,
+                    "formed-protoplanetary-disk-id-v2",
+                ));
+                if self.star_systems.contains_key(&system_id)
+                    || self.stars.contains_key(&star_id)
+                    || self.protoplanetary_disks.contains_key(&disk_id)
+                {
+                    return Err(ObjectError(
+                        "dynamic star-formation ID collision".to_owned(),
+                    ));
+                }
+                let offset = 0.1 * METERS_PER_PARSEC * rng.next_f64().sqrt();
+                let direction = std::f64::consts::TAU * rng.next_f64();
+                let position = Position::from_meters(
+                    cx + offset * direction.cos(),
+                    cy + offset * direction.sin(),
+                    cz,
+                )?;
+                let mut star = generation::generate_star_with_birth(
                     star_id,
-                    companion_star_ids: Vec::new(),
-                    planet_ids: Vec::new(),
-                    moon_ids: Vec::new(),
-                    asteroid_ids: Vec::new(),
-                    comet_ids: Vec::new(),
-                    asteroid_belt_ids: Vec::new(),
-                    comet_cloud_ids: Vec::new(),
-                    debris_disk_ids: Vec::new(),
-                    protoplanetary_disk_ids: vec![disk_id],
-                    component: GalacticComponent::Disk,
-                },
-            );
-            self.galaxies
-                .get_mut(&galaxy_id)
-                .expect("formation galaxy exists")
-                .star_system_ids
-                .push(system_id);
-            self.gas_reservoir_solar_masses =
-                (self.gas_reservoir_solar_masses - gas_consumed).max(0.0);
-            events.push(StellarTransition {
-                tick: tick_at_or_after(formation_time, tick_duration)
-                    .map_err(|error| ObjectError(error.to_string()))?,
-                star_id,
-                from: StellarStage::Protostar,
-                to: StellarStage::Protostar,
-                impacts: Vec::new(),
-                natal_kick_meters_per_second: 0,
-                interaction: Some(StellarInteractionKind::StarFormation),
-                related_star_id: None,
-            });
+                    system_id,
+                    formation_time,
+                    source.composition,
+                    mass_solar,
+                )?;
+                star.position = position;
+                star.velocity = velocity;
+                let mut disk = super::planetary::generate_protoplanetary_disk(
+                    disk_id,
+                    system_id,
+                    Mass::from_solar_masses(mass_solar)?,
+                    SimDuration::ZERO,
+                    &mut rng,
+                )?;
+                disk.formed_at = formation_time;
+                disk.initial_mass = Mass::from_solar_masses(
+                    disk.initial_mass
+                        .solar_masses()
+                        .min((remaining_cloud - mass_solar).max(0.0)),
+                )?;
+                disk.remaining_mass = disk.initial_mass;
+                disk.dissipates_at = formation_time
+                    .checked_add(
+                        SimDuration::from_years(10_000_000)
+                            .map_err(|error| ObjectError(error.to_string()))?,
+                    )
+                    .ok_or_else(|| {
+                        ObjectError("protoplanetary disk lifetime overflow".to_owned())
+                    })?;
+                let gas_consumed = mass_solar + disk.initial_mass.solar_masses();
+                self.gas_clouds
+                    .get_mut(&source.id)
+                    .expect("source cloud exists")
+                    .mass_solar = (remaining_cloud - gas_consumed).max(0.0);
+                self.refresh_gas_summary()?;
+                remaining_budget = (remaining_budget - gas_consumed).max(0.0);
+                self.stars.insert(star_id, star);
+                self.protoplanetary_disks.insert(disk_id, disk);
+                self.star_systems.insert(
+                    system_id,
+                    StarSystem {
+                        id: system_id,
+                        galaxy_id,
+                        cluster_id: Some(cluster_id),
+                        position,
+                        velocity,
+                        star_id,
+                        companion_star_ids: Vec::new(),
+                        planet_ids: Vec::new(),
+                        moon_ids: Vec::new(),
+                        asteroid_ids: Vec::new(),
+                        comet_ids: Vec::new(),
+                        asteroid_belt_ids: Vec::new(),
+                        comet_cloud_ids: Vec::new(),
+                        debris_disk_ids: Vec::new(),
+                        protoplanetary_disk_ids: vec![disk_id],
+                        component: GalacticComponent::Disk,
+                    },
+                );
+                self.galaxies
+                    .get_mut(&galaxy_id)
+                    .expect("formation galaxy exists")
+                    .star_system_ids
+                    .push(system_id);
+                cluster.system_ids.push(system_id);
+                events.push(StellarTransition {
+                    tick: tick_at_or_after(formation_time, tick_duration)
+                        .map_err(|error| ObjectError(error.to_string()))?,
+                    star_id,
+                    from: StellarStage::Protostar,
+                    to: StellarStage::Protostar,
+                    impacts: Vec::new(),
+                    natal_kick_meters_per_second: 0,
+                    interaction: Some(StellarInteractionKind::StarFormation),
+                    related_star_id: None,
+                });
+            }
+            let cloud = self
+                .gas_clouds
+                .get_mut(&source.id)
+                .expect("source cloud exists");
+            cloud.cluster_ids.push(cluster_id);
+            cloud.cluster_ids.sort_unstable();
+            self.star_clusters.insert(cluster_id, cluster);
         }
         self.validate()?;
         Ok(events)
@@ -464,6 +687,19 @@ impl ObjectRegistry {
         self.galaxies.get(&id)
     }
 
+    pub fn gas_cloud(&self, id: GasCloudId) -> Option<&GasCloud> {
+        self.gas_clouds.get(&id)
+    }
+    pub fn star_cluster(&self, id: StarClusterId) -> Option<&StarCluster> {
+        self.star_clusters.get(&id)
+    }
+    pub fn gas_clouds(&self) -> impl Iterator<Item = &GasCloud> {
+        self.gas_clouds.values()
+    }
+    pub fn star_clusters(&self) -> impl Iterator<Item = &StarCluster> {
+        self.star_clusters.values()
+    }
+
     pub fn star_system(&self, id: StarSystemId) -> Option<&StarSystem> {
         self.star_systems.get(&id)
     }
@@ -507,6 +743,8 @@ impl ObjectRegistry {
     pub fn find(&self, id: ObjectId) -> Option<ObjectRef<'_>> {
         match id {
             ObjectId::Galaxy(id) => self.galaxy(id).map(ObjectRef::Galaxy),
+            ObjectId::GasCloud(id) => self.gas_cloud(id).map(ObjectRef::GasCloud),
+            ObjectId::StarCluster(id) => self.star_cluster(id).map(ObjectRef::StarCluster),
             ObjectId::StarSystem(id) => self.star_system(id).map(ObjectRef::StarSystem),
             ObjectId::Star(id) => self.star(id).map(ObjectRef::Star),
             ObjectId::Planet(id) => self.planet(id).map(ObjectRef::Planet),

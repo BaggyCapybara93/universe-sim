@@ -17,16 +17,16 @@ pub use chemistry::{CompositionError, GasComposition};
 pub use config::{GenerationConfig, SimulationConfig};
 pub use events::{AstroEvent, AstroEventKind};
 pub use id::{
-    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
-    ProtoplanetaryDiskId, StarId, StarSystemId, UniverseId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, GasCloudId, MoonId,
+    PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId, UniverseId,
 };
 pub use matter::MatterInventory;
 pub use objects::{
     Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, DynamicsMode, Galaxy,
-    GalaxyCatalogEntry, GalaxyMorphology, Moon, MoonFormationHistory, MoonOrigin, ObjectCounts,
-    ObjectId, ObjectRef, ObjectRegistry, Planet, PlanetAtmosphere, PlanetImpact, PlanetImpactKind,
-    PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star, StarSystem,
-    StellarInteractionKind, StellarStage,
+    GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon, MoonFormationHistory,
+    MoonOrigin, ObjectCounts, ObjectId, ObjectRef, ObjectRegistry, Planet, PlanetAtmosphere,
+    PlanetImpact, PlanetImpactKind, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star,
+    StarCluster, StarSystem, StellarInteractionKind, StellarStage,
 };
 pub use orbital::{GravityBody, OrbitalElements, leapfrog_step, propagate_kepler};
 pub use region::{GalaxyRegion, MaterializedRegion, RegionCoord};

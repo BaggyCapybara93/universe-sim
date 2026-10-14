@@ -500,6 +500,7 @@ impl ObjectRegistry {
                 .map_err(|_| TimeError::Overflow)?;
             }
             self.return_gas(
+                star_id,
                 previous_mass.solar_masses() - mass.solar_masses(),
                 composition,
             )

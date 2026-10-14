@@ -23,9 +23,9 @@ use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
 
-pub const STATE_FORMAT_VERSION: u32 = 13;
-pub const SIMULATION_VERSION: u32 = 2;
-pub const GENERATION_VERSION: u32 = 10;
+pub const STATE_FORMAT_VERSION: u32 = 14;
+pub const SIMULATION_VERSION: u32 = 3;
+pub const GENERATION_VERSION: u32 = 11;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -530,8 +530,10 @@ impl Universe {
         require_version(
             &fields,
             "simulation_version",
-            if state_format_version >= 13 {
+            if state_format_version >= 14 {
                 SIMULATION_VERSION
+            } else if state_format_version >= 13 {
+                2
             } else {
                 1
             },
@@ -539,8 +541,10 @@ impl Universe {
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 13 {
+            if state_format_version >= 14 {
                 GENERATION_VERSION
+            } else if state_format_version >= 13 {
+                10
             } else if state_format_version >= 12 {
                 9
             } else if state_format_version >= 11 {
@@ -1463,19 +1467,30 @@ mod tests {
         let legacy = universe
             .encode()
             .lines()
+            .filter(|line| !line.starts_with("H|") && !line.starts_with("L|"))
             .map(|line| {
                 if line.starts_with("S|") {
                     line.split('|').take(19).collect::<Vec<_>>().join("|")
+                } else if line.starts_with("Y|") {
+                    line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=13", "state_format_version=12")
-                        .replace("simulation_version=2", "simulation_version=1")
-                        .replace("generation_version=10", "generation_version=9")
+                    line.replace("state_format_version=14", "state_format_version=12")
+                        .replace("simulation_version=3", "simulation_version=1")
+                        .replace("generation_version=11", "generation_version=9")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let mut restored = Universe::decode(&legacy).unwrap();
-        assert_eq!(restored, universe);
+        assert_eq!(
+            restored.objects().stars().count(),
+            universe.objects().stars().count()
+        );
+        assert_eq!(
+            restored.objects().gas_reservoir_solar_masses(),
+            universe.objects().gas_reservoir_solar_masses()
+        );
+        restored.objects().validate().unwrap();
         restored.advance_ticks(0).unwrap();
         assert_eq!(
             restored.objects().gas_composition(),
@@ -1485,6 +1500,37 @@ mod tests {
             restored.objects().gas_reservoir_solar_masses(),
             universe.objects().gas_reservoir_solar_masses()
         );
+    }
+
+    #[test]
+    fn version_thirteen_state_gains_cloud_and_cluster_ancestry() {
+        let universe = Universe::new(test_config()).unwrap();
+        let legacy = universe
+            .encode()
+            .lines()
+            .filter(|line| !line.starts_with("H|") && !line.starts_with("L|"))
+            .map(|line| {
+                if line.starts_with("Y|") {
+                    line.split('|').take(20).collect::<Vec<_>>().join("|")
+                } else {
+                    line.replace("state_format_version=14", "state_format_version=13")
+                        .replace("simulation_version=3", "simulation_version=2")
+                        .replace("generation_version=11", "generation_version=10")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let restored = Universe::decode(&legacy).unwrap();
+        restored.objects().validate().unwrap();
+        assert_eq!(
+            restored.objects().gas_reservoir_solar_masses(),
+            universe.objects().gas_reservoir_solar_masses()
+        );
+        assert_eq!(
+            restored.objects().star_clusters().count(),
+            restored.objects().star_systems().count()
+        );
+        assert_eq!(Universe::decode(&restored.encode()).unwrap(), restored);
     }
 
     #[test]
@@ -1692,6 +1738,8 @@ mod tests {
                 || line.starts_with("A|")
                 || line.starts_with("C|")
                 || line.starts_with("D|")
+                || line.starts_with("H|")
+                || line.starts_with("L|")
             {
                 continue;
             }
@@ -1713,9 +1761,9 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=13", "state_format_version=2")
-                        .replace("generation_version=10", "generation_version=1")
-                        .replace("simulation_version=2", "simulation_version=1"),
+                    line.replace("state_format_version=14", "state_format_version=2")
+                        .replace("generation_version=11", "generation_version=1")
+                        .replace("simulation_version=3", "simulation_version=1"),
                 );
             }
         }
@@ -1734,6 +1782,8 @@ mod tests {
                     && !line.starts_with("A|")
                     && !line.starts_with("C|")
                     && !line.starts_with("D|")
+                    && !line.starts_with("H|")
+                    && !line.starts_with("L|")
             })
             .filter(|line| !line.starts_with("galaxies="))
             .map(|line| {
@@ -1746,17 +1796,17 @@ mod tests {
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=13", "state_format_version=6")
-                        .replace("generation_version=10", "generation_version=3")
-                        .replace("simulation_version=2", "simulation_version=1")
+                    line.replace("state_format_version=14", "state_format_version=6")
+                        .replace("generation_version=11", "generation_version=3")
+                        .replace("simulation_version=3", "simulation_version=1")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=13"));
-        assert!(upgraded.contains("generation_version=10"));
+        assert!(upgraded.contains("state_format_version=14"));
+        assert!(upgraded.contains("generation_version=11"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

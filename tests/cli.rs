@@ -64,6 +64,8 @@ fn creates_advances_and_inspects_generated_objects() {
     ]);
     assert!(created.status.success(), "{}", text(&created.stderr));
     assert!(text(&created.stdout).contains("Star systems: 7"));
+    assert!(text(&created.stdout).contains("Gas clouds:"));
+    assert!(text(&created.stdout).contains("Star clusters: 7"));
     assert!(text(&created.stdout).contains("Gas composition: H"));
     assert!(text(&created.stdout).contains("Total bodies:"));
     assert!(text(&created.stdout).contains("Moons:"));
@@ -98,6 +100,32 @@ fn creates_advances_and_inspects_generated_objects() {
     assert!(text(&inspected.stdout).contains("Age at epoch:"));
     assert!(text(&inspected.stdout).contains("Current mass:"));
     assert!(text(&inspected.stdout).contains("Birth composition: H"));
+    assert!(text(&inspected.stdout).contains("Source cluster: CL-"));
+    assert!(text(&inspected.stdout).contains("Source cloud: GC-"));
+    let cloud_record = contents
+        .lines()
+        .find(|line| line.starts_with("H|"))
+        .unwrap();
+    let cloud_id = format!("GC-{}", cloud_record.split('|').nth(1).unwrap());
+    let inspected_cloud = run(&["inspect", "--state", state_text, &cloud_id]);
+    assert!(
+        inspected_cloud.status.success(),
+        "{}",
+        text(&inspected_cloud.stderr)
+    );
+    assert!(text(&inspected_cloud.stdout).contains(&format!("GAS CLOUD {cloud_id}")));
+    let cluster_record = contents
+        .lines()
+        .find(|line| line.starts_with("L|"))
+        .unwrap();
+    let cluster_id = format!("CL-{}", cluster_record.split('|').nth(1).unwrap());
+    let inspected_cluster = run(&["inspect", "--state", state_text, &cluster_id]);
+    assert!(
+        inspected_cluster.status.success(),
+        "{}",
+        text(&inspected_cluster.stderr)
+    );
+    assert!(text(&inspected_cluster.stdout).contains(&format!("STAR CLUSTER {cluster_id}")));
 
     let materialized = run(&["materialize", "--state", state_text, "--region", "18,-4,91"]);
     assert!(
@@ -200,7 +228,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=13", "state_format_version=99");
+        .replace("state_format_version=14", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

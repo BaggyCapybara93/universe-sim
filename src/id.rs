@@ -41,6 +41,8 @@ macro_rules! stable_id {
 
 stable_id!(UniverseId, "U");
 stable_id!(GalaxyId, "G");
+stable_id!(GasCloudId, "GC");
+stable_id!(StarClusterId, "CL");
 stable_id!(StarSystemId, "SYS");
 stable_id!(StarId, "S");
 stable_id!(PlanetId, "P");

@@ -3,17 +3,18 @@ use std::str::FromStr;
 
 use crate::chemistry::GasComposition;
 use crate::id::{
-    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
-    ProtoplanetaryDiskId, StarId, StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, GasCloudId, MoonId,
+    PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId,
 };
 use crate::orbital::OrbitalElements;
 use crate::time::SimDuration;
 use crate::units::{Angle, Length, Luminosity, Mass, Position, Temperature, Velocity};
 
 use super::{
-    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, GalacticComponent, Galaxy, Moon,
-    MoonFormationHistory, MoonOrigin, ObjectError, ObjectRegistry, Planet, PlanetAtmosphere,
-    PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star, StarSystem, StellarStage,
+    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, GalacticComponent, Galaxy, GasCloud,
+    GasCloudKind, Moon, MoonFormationHistory, MoonOrigin, ObjectError, ObjectRegistry, Planet,
+    PlanetAtmosphere, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star, StarCluster,
+    StarSystem, StellarStage,
 };
 
 impl ObjectRegistry {
@@ -45,12 +46,48 @@ impl ObjectRegistry {
             )
             .expect("writing to a String cannot fail");
         }
+        for cloud in self.gas_clouds.values() {
+            let [x, y, z] = cloud.position.meters();
+            writeln!(
+                output,
+                "H|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                cloud.id.value(),
+                cloud.galaxy_id.value(),
+                cloud.kind.code(),
+                float_bits(x),
+                float_bits(y),
+                float_bits(z),
+                float_bits(cloud.mass_solar),
+                float_bits(cloud.composition.hydrogen_fraction()),
+                float_bits(cloud.composition.helium_fraction()),
+                float_bits(cloud.composition.carbon_fraction()),
+                float_bits(cloud.composition.oxygen_fraction()),
+                float_bits(cloud.composition.iron_fraction()),
+                float_bits(cloud.composition.other_metals_fraction()),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        for cluster in self.star_clusters.values() {
+            let [x, y, z] = cluster.position.meters();
+            writeln!(
+                output,
+                "L|{}|{}|{}|{}|{}|{}|{}",
+                cluster.id.value(),
+                cluster.cloud_id.value(),
+                cluster.formed_at.seconds(),
+                float_bits(x),
+                float_bits(y),
+                float_bits(z),
+                encode_ids(&cluster.system_ids)
+            )
+            .expect("writing to a String cannot fail");
+        }
         for system in self.star_systems.values() {
             let [px, py, pz] = system.position.meters();
             let [vx, vy, vz] = system.velocity.meters_per_second();
             writeln!(
                 output,
-                "Y|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "Y|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 system.id.value(),
                 system.galaxy_id.value(),
                 float_bits(px),
@@ -70,6 +107,9 @@ impl ObjectRegistry {
                 encode_ids(&system.comet_cloud_ids),
                 encode_ids(&system.debris_disk_ids),
                 encode_ids(&system.protoplanetary_disk_ids),
+                system
+                    .cluster_id
+                    .map_or(String::new(), |id| id.value().to_string()),
             )
             .expect("writing to a String cannot fail");
         }
@@ -360,16 +400,64 @@ impl ObjectRegistry {
                     };
                     super::insert_unique(&mut registry.galaxies, galaxy.id, galaxy, "galaxy")?;
                 }
+                Some("H") => {
+                    require_field_count(&fields, 14, "gas cloud")?;
+                    let cloud = GasCloud {
+                        id: GasCloudId::new(parse_number(fields[1], "gas-cloud ID")?),
+                        galaxy_id: GalaxyId::new(parse_number(fields[2], "galaxy ID")?),
+                        kind: GasCloudKind::parse_code(fields[3])?,
+                        position: parse_position(&fields[4..7])?,
+                        mass_solar: parse_float_bits(fields[7], "gas-cloud mass")?,
+                        composition: GasComposition::new(
+                            parse_float_bits(fields[8], "cloud hydrogen")?,
+                            parse_float_bits(fields[9], "cloud helium")?,
+                            parse_float_bits(fields[10], "cloud carbon")?,
+                            parse_float_bits(fields[11], "cloud oxygen")?,
+                            parse_float_bits(fields[12], "cloud iron")?,
+                            parse_float_bits(fields[13], "cloud other metals")?,
+                        )
+                        .map_err(|error| ObjectError(error.to_string()))?,
+                        cluster_ids: Vec::new(),
+                    };
+                    super::insert_unique(&mut registry.gas_clouds, cloud.id, cloud, "gas cloud")?;
+                }
+                Some("L") => {
+                    require_field_count(&fields, 8, "star cluster")?;
+                    let cluster = StarCluster {
+                        id: StarClusterId::new(parse_number(fields[1], "star-cluster ID")?),
+                        cloud_id: GasCloudId::new(parse_number(fields[2], "gas-cloud ID")?),
+                        formed_at: SimDuration::from_seconds(parse_number(
+                            fields[3],
+                            "cluster formation time",
+                        )?),
+                        position: parse_position(&fields[4..7])?,
+                        system_ids: parse_ids(fields[7], StarSystemId::new)?,
+                    };
+                    super::insert_unique(
+                        &mut registry.star_clusters,
+                        cluster.id,
+                        cluster,
+                        "star cluster",
+                    )?;
+                }
                 Some("Y") => {
-                    if !matches!(fields.len(), 11..=13 | 17 | 20) {
+                    if !matches!(fields.len(), 11..=13 | 17 | 20 | 21) {
                         return Err(ObjectError(format!(
-                            "star-system record has {} fields; expected 11, 12, 13, or 17",
+                            "star-system record has {} fields; expected 11, 12, 13, 17, 20, or 21",
                             fields.len()
                         )));
                     }
                     let system = StarSystem {
                         id: StarSystemId::new(parse_number(fields[1], "star-system ID")?),
                         galaxy_id: GalaxyId::new(parse_number(fields[2], "galaxy ID")?),
+                        cluster_id: if fields.len() == 21 {
+                            Some(StarClusterId::new(parse_number(
+                                fields[20],
+                                "star-cluster ID",
+                            )?))
+                        } else {
+                            None
+                        },
                         position: parse_position(&fields[3..6])?,
                         velocity: parse_velocity(&fields[6..9])?,
                         star_id: StarId::new(parse_number(fields[9], "star ID")?),
@@ -379,48 +467,48 @@ impl ObjectRegistry {
                         } else {
                             GalacticComponent::Disk
                         },
-                        companion_star_ids: if matches!(fields.len(), 13 | 17 | 20) {
+                        companion_star_ids: if matches!(fields.len(), 13 | 17 | 20 | 21) {
                             parse_ids(fields[12], StarId::new)?
                         } else {
                             Vec::new()
                         },
-                        moon_ids: if matches!(fields.len(), 17 | 20) {
+                        moon_ids: if matches!(fields.len(), 17 | 20 | 21) {
                             parse_ids(fields[13], MoonId::new)?
                         } else {
                             Vec::new()
                         },
-                        asteroid_ids: if fields.len() == 20 {
+                        asteroid_ids: if fields.len() >= 20 {
                             parse_ids(fields[14], AsteroidId::new)?
                         } else {
                             Vec::new()
                         },
-                        comet_ids: if fields.len() == 20 {
+                        comet_ids: if fields.len() >= 20 {
                             parse_ids(fields[15], CometId::new)?
                         } else {
                             Vec::new()
                         },
-                        asteroid_belt_ids: if fields.len() == 20 {
+                        asteroid_belt_ids: if fields.len() >= 20 {
                             parse_ids(fields[16], AsteroidBeltId::new)?
                         } else if fields.len() == 17 {
                             parse_ids(fields[14], AsteroidBeltId::new)?
                         } else {
                             Vec::new()
                         },
-                        comet_cloud_ids: if fields.len() == 20 {
+                        comet_cloud_ids: if fields.len() >= 20 {
                             parse_ids(fields[17], CometCloudId::new)?
                         } else if fields.len() == 17 {
                             parse_ids(fields[15], CometCloudId::new)?
                         } else {
                             Vec::new()
                         },
-                        debris_disk_ids: if fields.len() == 20 {
+                        debris_disk_ids: if fields.len() >= 20 {
                             parse_ids(fields[18], DebrisDiskId::new)?
                         } else if fields.len() == 17 {
                             parse_ids(fields[16], DebrisDiskId::new)?
                         } else {
                             Vec::new()
                         },
-                        protoplanetary_disk_ids: if fields.len() == 20 {
+                        protoplanetary_disk_ids: if fields.len() >= 20 {
                             parse_ids(fields[19], ProtoplanetaryDiskId::new)?
                         } else {
                             Vec::new()
@@ -923,6 +1011,25 @@ impl ObjectRegistry {
                 }
                 Some(tag) => return Err(ObjectError(format!("unknown object record '{tag}'"))),
                 None => return Err(ObjectError("empty object record".to_owned())),
+            }
+        }
+        if registry.gas_clouds.is_empty() {
+            if !registry.star_clusters.is_empty()
+                || registry
+                    .star_systems
+                    .values()
+                    .any(|system| system.cluster_id.is_some())
+            {
+                return Err(ObjectError(
+                    "cloud ancestry records are incomplete".to_owned(),
+                ));
+            }
+            registry.attach_legacy_ancestry()?;
+        } else {
+            for cluster in registry.star_clusters.values() {
+                if let Some(cloud) = registry.gas_clouds.get_mut(&cluster.cloud_id) {
+                    cloud.cluster_ids.push(cluster.id);
+                }
             }
         }
         registry.validate()?;

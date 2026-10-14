@@ -3,17 +3,19 @@ use std::fmt;
 use std::str::FromStr;
 
 use super::{
-    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, Galaxy, Moon, Planet,
-    ProtoplanetaryDisk, Star, StarSystem,
+    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, Galaxy, GasCloud, Moon, Planet,
+    ProtoplanetaryDisk, Star, StarCluster, StarSystem,
 };
 use crate::id::{
-    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, IdParseError,
-    MoonId, PlanetId, ProtoplanetaryDiskId, StarId, StarSystemId,
+    AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, GasCloudId,
+    IdParseError, MoonId, PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectId {
     Galaxy(GalaxyId),
+    GasCloud(GasCloudId),
+    StarCluster(StarClusterId),
     StarSystem(StarSystemId),
     Star(StarId),
     Planet(PlanetId),
@@ -30,6 +32,8 @@ impl fmt::Display for ObjectId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Galaxy(id) => id.fmt(formatter),
+            Self::GasCloud(id) => id.fmt(formatter),
+            Self::StarCluster(id) => id.fmt(formatter),
             Self::StarSystem(id) => id.fmt(formatter),
             Self::Star(id) => id.fmt(formatter),
             Self::Planet(id) => id.fmt(formatter),
@@ -57,6 +61,16 @@ impl FromStr for ObjectId {
             value
                 .parse()
                 .map(Self::Galaxy)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("GC-") {
+            value
+                .parse()
+                .map(Self::GasCloud)
+                .map_err(ObjectIdParseError::Id)
+        } else if value.starts_with("CL-") {
+            value
+                .parse()
+                .map(Self::StarCluster)
                 .map_err(ObjectIdParseError::Id)
         } else if value.starts_with("S-") {
             value
@@ -120,7 +134,7 @@ impl fmt::Display for ObjectIdParseError {
         match self {
             Self::UnknownPrefix(value) => write!(
                 formatter,
-                "unknown object ID '{value}'; expected G-, SYS-, S-, P-, M-, AST-, COM-, AB-, CC-, DD-, or PD-"
+                "unknown object ID '{value}'; expected G-, GC-, CL-, SYS-, S-, P-, M-, AST-, COM-, AB-, CC-, DD-, or PD-"
             ),
             Self::Id(error) => error.fmt(formatter),
         }
@@ -132,6 +146,8 @@ impl Error for ObjectIdParseError {}
 #[derive(Debug, Clone, Copy)]
 pub enum ObjectRef<'a> {
     Galaxy(&'a Galaxy),
+    GasCloud(&'a GasCloud),
+    StarCluster(&'a StarCluster),
     StarSystem(&'a StarSystem),
     Star(&'a Star),
     Planet(&'a Planet),

@@ -264,6 +264,7 @@ pub(super) fn generate_system(
         system: StarSystem {
             id: system_id,
             galaxy_id,
+            cluster_id: None,
             position,
             velocity,
             star_id,

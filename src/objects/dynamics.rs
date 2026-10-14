@@ -182,8 +182,12 @@ impl ObjectRegistry {
                 primary.luminosity = luminosity;
                 primary.temperature = temperature;
                 self.stars.remove(&companion_id);
-                self.return_gas(total_mass - merged_mass.solar_masses(), composition)
-                    .map_err(|_| TimeError::Overflow)?;
+                self.return_gas(
+                    primary_id,
+                    total_mass - merged_mass.solar_masses(),
+                    composition,
+                )
+                .map_err(|_| TimeError::Overflow)?;
                 if let Some(system) = self.star_systems.get_mut(&system_id) {
                     system.companion_star_ids.retain(|id| *id != companion_id);
                 }
@@ -229,6 +233,7 @@ impl ObjectRegistry {
                 .expect("binary accretor exists")
                 .current_mass = accretor_mass;
             self.return_gas(
+                donor_id,
                 donor_old_solar + accretor_old_solar
                     - donor_mass.solar_masses()
                     - accretor_mass.solar_masses(),

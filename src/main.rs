@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use universe_sim::{
-    GalaxyId, GasComposition, MAX_CONCURRENT_GALAXIES, ObjectId, ObjectRef, RegionCoord,
-    SimDuration, SimulationConfig, TickDuration, Universe,
+    GalaxyId, GasComposition, MAX_CONCURRENT_GALAXIES, ObjectId, ObjectRef, ObjectRegistry,
+    RegionCoord, SimDuration, SimulationConfig, TickDuration, Universe,
 };
 
 #[derive(Debug, Parser)]
@@ -139,7 +139,7 @@ struct InspectArgs {
     #[arg(long, default_value = "0,0,0", allow_hyphen_values = true)]
     region: RegionCoord,
 
-    /// Optional object to inspect (G-, SYS-, S-, or P-).
+    /// Optional object to inspect (G-, GC-, CL-, SYS-, S-, P-, and other body IDs).
     object: Option<ObjectId>,
 }
 
@@ -264,6 +264,8 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     println!("  Seed: {}", universe.seed());
     println!("  Tick length: {}", universe.clock().tick_duration());
     println!("  Galaxies: {}", universe.galaxies().count());
+    println!("  Gas clouds: {}", counts.gas_clouds);
+    println!("  Star clusters: {}", counts.star_clusters);
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
@@ -286,6 +288,8 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     println!(
         "  Total objects: {}",
         universe.galaxies().count()
+            + counts.gas_clouds
+            + counts.star_clusters
             + counts.star_systems
             + counts.stars
             + counts.planets
@@ -296,7 +300,6 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
             + counts.comet_clouds
             + counts.debris_disks
             + counts.protoplanetary_disks
-            + counts.gas_reservoirs
     );
     println!("  State: {}", args.output.display());
     Ok(())
@@ -457,7 +460,7 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
         let object = objects
             .find(id)
             .ok_or_else(|| CliError::message(format!("object {id} was not found")))?;
-        print_object(object);
+        print_object(object, objects);
         if let Some(dynamics) = dynamics {
             println!("  Dynamics: {dynamics}");
         }
@@ -471,6 +474,8 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
     println!("  Tick length: {}", universe.clock().tick_duration());
     println!("  Elapsed time: {}", universe.clock().elapsed());
     println!("  Galaxies: {}", universe.galaxies().count());
+    println!("  Gas clouds: {}", counts.gas_clouds);
+    println!("  Star clusters: {}", counts.star_clusters);
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
@@ -514,6 +519,8 @@ fn materialize(args: MaterializeArgs, diagnostics: &Diagnostics) -> Result<(), C
         galaxy_id
     );
     println!("  Star systems: {}", counts.star_systems);
+    println!("  Gas clouds: {}", counts.gas_clouds);
+    println!("  Star clusters: {}", counts.star_clusters);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
     println!("  Moons: {}", counts.moons);
@@ -606,7 +613,19 @@ fn list_events(args: EventsArgs, diagnostics: &Diagnostics) -> Result<(), CliErr
     Ok(())
 }
 
-fn print_object(object: ObjectRef<'_>) {
+fn print_system_ancestry(objects: &ObjectRegistry, system_id: universe_sim::StarSystemId) {
+    if let Some(cluster_id) = objects
+        .star_system(system_id)
+        .and_then(|system| system.cluster_id())
+    {
+        println!("  Source cluster: {cluster_id}");
+        if let Some(cluster) = objects.star_cluster(cluster_id) {
+            println!("  Source cloud: {}", cluster.cloud_id());
+        }
+    }
+}
+
+fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry) {
     match object {
         ObjectRef::Galaxy(galaxy) => {
             let [x, y, z] = galaxy.position().meters();
@@ -614,11 +633,36 @@ fn print_object(object: ObjectRef<'_>) {
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
             println!("  Star systems: {}", galaxy.star_system_ids().len());
         }
+        ObjectRef::GasCloud(cloud) => {
+            let [x, y, z] = cloud.position().meters();
+            println!("GAS CLOUD {}", cloud.id());
+            println!("  Galaxy: {}", cloud.galaxy_id());
+            println!("  Kind: {:?}", cloud.kind());
+            println!("  Mass: {:.6} solar masses", cloud.mass_solar());
+            println!("  Metallicity: {:.6}", cloud.composition().metallicity());
+            println!("  Clusters: {}", cloud.cluster_ids().len());
+            println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
+        }
+        ObjectRef::StarCluster(cluster) => {
+            println!("STAR CLUSTER {}", cluster.id());
+            println!("  Source cloud: {}", cluster.cloud_id());
+            println!("  Formed at: {}", cluster.formed_at());
+            println!(
+                "  Systems: {}",
+                cluster
+                    .system_ids()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         ObjectRef::StarSystem(system) => {
             let [x, y, z] = system.position().meters();
             let [vx, vy, vz] = system.velocity().meters_per_second();
             println!("STAR SYSTEM {}", system.id());
             println!("  Galaxy: {}", system.galaxy_id());
+            print_system_ancestry(objects, system.id());
             println!("  Galactic component: {}", system.component());
             println!("  Star: {}", system.star_id());
             if !system.companion_star_ids().is_empty() {
@@ -641,6 +685,7 @@ fn print_object(object: ObjectRef<'_>) {
             let [vx, vy, vz] = star.velocity().meters_per_second();
             println!("STAR {}", star.id());
             println!("  System: {}", star.system_id());
+            print_system_ancestry(objects, star.system_id());
             println!(
                 "  Initial mass: {:.6} solar masses",
                 star.initial_mass().solar_masses()
@@ -675,6 +720,7 @@ fn print_object(object: ObjectRef<'_>) {
             println!("PLANET {}", planet.id());
             println!("  System: {}", planet.system_id());
             println!("  Star: {}", planet.star_id());
+            print_system_ancestry(objects, planet.system_id());
             println!("  Mass: {:.6} Earth masses", planet.mass().earth_masses());
             println!("  Radius: {:.3} km", planet.radius().meters() / 1_000.0);
             println!("  Atmosphere: {}", planet.atmosphere());

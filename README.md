@@ -157,13 +157,13 @@ cargo test
 
 ## Stellar feedback and chemical evolution
 
-Stellar mass lost during lifecycle transitions returns immediately to the local
-region's gas reservoir, including winds, envelope shedding, and explosive
+Stellar mass lost during lifecycle transitions returns immediately to its source
+cloud, including winds, envelope shedding, and explosive
 disruption. For core-collapse supernovae, the ejected mass is deposited at the
 transition to the neutron-star or black-hole remnant, where the stellar mass
 prescription applies the loss. Binary mergers and non-retained mass transfer
-also return their lost mass. Gas mixes by mass across hydrogen, helium, carbon,
-oxygen, iron, and other metals. Stellar stage changes cannot recreate mass
+also return their lost mass. Gas mixes by mass within each cloud across hydrogen,
+helium, carbon, oxygen, iron, and other metals. Stellar stage changes cannot recreate mass
 previously lost or transferred.
 
 New stars inherit all six gas fractions at their formation time, with metallicity
@@ -223,13 +223,15 @@ continue under the new rules; historical mass loss is not deposited again.
   irradiate, destroy, or unbind planets. Those outcomes are attached to the
   triggering event, persisted as planet status, and stop destroyed or unbound
   planets from being propagated as stable Kepler orbits.
-- Every generated region contains a finite persisted star-forming gas reservoir.
-  Its normalized hydrogen, helium, carbon, oxygen, iron, and other-metal mass
-  fractions vary with galaxy morphology and survive save/load cycles.
-  At deterministic collapse intervals, a fixed formation efficiency limits the
-  available stellar mass; only material placed in the new star and disk is
-  removed. New stars begin as age-zero protostars and inherit the local gas
-  composition. Stellar ejecta replenish and enrich the reservoir over time.
+- Every generated region contains persistent diffuse and molecular gas clouds
+  with independent mass and six-component composition. The initial mixture
+  varies with galaxy morphology. At deterministic collapse intervals, a fixed
+  efficiency limits how much gas from one molecular cloud becomes stars and
+  disks. Up to four coeval systems form in a compact, persistent cluster;
+  their age-zero protostars inherit that cloud's composition. Stellar ejecta
+  replenish and enrich the source cloud. Existing generated systems receive
+  individual historical clusters so their ancestry remains inspectable.
+  Follow a planet's system to its cluster and source cloud with `inspect`.
 - Evolved stars in binaries are checked against their periastron Roche lobes.
   Stable overflow transfers mass with partial retention; contact systems and
   sufficiently unstable mass ratios merge, remove the consumed companion, and
