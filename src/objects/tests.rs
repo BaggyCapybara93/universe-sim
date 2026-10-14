@@ -263,6 +263,7 @@ fn roche_overflow_transfers_mass_and_contact_merges() {
         .unwrap()
         .orbital_elements = Some(test_orbit(1.0));
     let before = selected.0.star(primary_id).unwrap().current_mass();
+    let total_before = stellar_and_gas_mass(&selected.0);
     let outcomes = selected
         .0
         .resolve_binary_interactions(&BTreeMap::from([(primary_id, 1)]), SimDuration::ZERO)
@@ -272,6 +273,7 @@ fn roche_overflow_transfers_mass_and_contact_merges() {
         Some(StellarInteractionKind::MassTransfer)
     );
     assert!(selected.0.star(primary_id).unwrap().current_mass() < before);
+    assert!((stellar_and_gas_mass(&selected.0) - total_before).abs() < 1e-12);
 
     selected
         .0
@@ -288,6 +290,7 @@ fn roche_overflow_transfers_mass_and_contact_merges() {
         Some(StellarInteractionKind::StellarMerger)
     );
     assert!(selected.0.star(companion_id).is_none());
+    assert!((stellar_and_gas_mass(&selected.0) - total_before).abs() < 1e-12);
     selected.0.validate().unwrap();
 }
 
@@ -518,4 +521,241 @@ fn parallel_generation_and_advancement_match_single_threaded_results() {
         .unwrap()
         .install(run);
     assert_eq!(single_thread, four_threads);
+}
+
+// A controlled, isolated star with no pre-existing companions or planets.
+fn feedback_fixture(mass_solar: f64, metallicity: f64) -> (ObjectRegistry, GenerationConfig) {
+    let config = GenerationConfig {
+        star_systems: 1,
+        star_mass_solar_min: 0.1,
+        star_mass_solar_max: 0.2,
+        planets_per_system_min: 0,
+        planets_per_system_max: 0,
+        ..GenerationConfig::DEFAULT
+    };
+    let mut objects = ObjectRegistry::generate(42, config).unwrap();
+    let system = objects.star_systems.values_mut().next().unwrap();
+    system.companion_star_ids.clear();
+    let star_id = system.star_id;
+    let star = generation::generate_star_with_birth(
+        star_id,
+        system.id,
+        SimDuration::ZERO,
+        crate::GasComposition::from_metallicity(metallicity).unwrap(),
+        mass_solar,
+    )
+    .unwrap();
+    objects.stars.clear();
+    objects.stars.insert(star_id, star);
+    objects.gas_reservoir_solar_masses = 0.0;
+    objects.gas_composition = crate::GasComposition::from_metallicity(metallicity).unwrap();
+    (objects, config)
+}
+
+fn stellar_and_gas_mass(objects: &ObjectRegistry) -> f64 {
+    objects.gas_reservoir_solar_masses()
+        + objects
+            .stars()
+            .map(|star| star.mass().solar_masses())
+            .sum::<f64>()
+}
+
+#[test]
+fn stellar_feedback_conserves_mass_enriches_gas_and_is_not_replayed() {
+    for (mass, metallicity) in [
+        (1.0, 0.014),
+        (20.0, 0.014),
+        (60.0, 0.014),
+        (180.0, 0.0001),
+        (300.0, 0.0001),
+    ] {
+        let (mut objects, _) = feedback_fixture(mass, metallicity);
+        let schedule =
+            stellar::stellar_schedule(Mass::from_solar_masses(mass).unwrap(), metallicity).unwrap();
+        let mut previous_gas = 0.0;
+        for (elapsed, _) in &schedule {
+            objects
+                .advance_stars_to(*elapsed, SimDuration::from_years(1).unwrap())
+                .unwrap();
+            assert!((stellar_and_gas_mass(&objects) - mass).abs() < 1e-10);
+            assert!(objects.gas_reservoir_solar_masses() >= previous_gas);
+            objects.gas_composition().validate().unwrap();
+            previous_gas = objects.gas_reservoir_solar_masses();
+        }
+        assert!(previous_gas > 0.0);
+        assert!(objects.gas_composition().metallicity() > metallicity);
+        let mut encoded = String::new();
+        objects.encode(&mut encoded);
+        let mut restored = ObjectRegistry::decode(encoded.lines().skip(1)).unwrap();
+        let events = restored
+            .advance_stars_to(
+                schedule.last().unwrap().0,
+                SimDuration::from_years(1).unwrap(),
+            )
+            .unwrap();
+        assert!(events.is_empty());
+        assert_eq!(restored, objects);
+    }
+}
+
+#[test]
+fn formation_inherits_all_gas_components_and_accounts_for_disk_mass() {
+    let (mut objects, config) = feedback_fixture(0.1, 0.014);
+    let composition = crate::GasComposition::new(0.68, 0.28, 0.01, 0.015, 0.005, 0.01).unwrap();
+    objects.gas_composition = composition;
+    objects.gas_reservoir_solar_masses = 10.0;
+    let before = stellar_and_gas_mass(&objects)
+        + objects
+            .protoplanetary_disks()
+            .map(|disk| disk.remaining_mass().solar_masses())
+            .sum::<f64>();
+    let events = objects
+        .form_stars_between(
+            42,
+            config,
+            SimDuration::ZERO,
+            SimDuration::from_years(10_000_000).unwrap(),
+            SimDuration::from_years(1).unwrap(),
+        )
+        .unwrap();
+    let birth = events
+        .iter()
+        .find(|event| event.interaction == Some(StellarInteractionKind::StarFormation))
+        .unwrap();
+    let star = objects.star(birth.star_id).unwrap();
+    assert_eq!(star.birth_composition(), objects.gas_composition());
+    assert_eq!(star.metallicity(), objects.gas_composition().metallicity());
+    // The original protostar returns a small amount of unprocessed material.
+    assert!(star.birth_composition().carbon_fraction() > 0.009);
+    let after = stellar_and_gas_mass(&objects)
+        + objects
+            .protoplanetary_disks()
+            .map(|disk| disk.remaining_mass().solar_masses())
+            .sum::<f64>();
+    assert!((after - before).abs() < 1e-12);
+    let mut encoded = String::new();
+    objects.encode(&mut encoded);
+    assert_eq!(
+        ObjectRegistry::decode(encoded.lines().skip(1)).unwrap(),
+        objects
+    );
+}
+
+#[test]
+fn feedback_restarts_formation_in_empty_gas_and_is_checkpoint_independent() {
+    let (initial, config) = feedback_fixture(20.0, 0.014);
+    let advance = |objects: &mut ObjectRegistry, from_years, to_years| {
+        let from = SimDuration::from_years(from_years).unwrap();
+        let to = SimDuration::from_years(to_years).unwrap();
+        let tick = SimDuration::from_years(1).unwrap();
+        let mut events = objects
+            .form_stars_between(42, config, from, to, tick)
+            .unwrap();
+        events.extend(objects.advance_stars_to(to, tick).unwrap());
+        events
+    };
+    let mut whole = initial.clone();
+    let mut whole_events = advance(&mut whole, 0, 100_000_000);
+    let mut split = initial;
+    let mut split_events = Vec::new();
+    let mut from = 0;
+    for to in [
+        333_333,
+        7_000_000,
+        10_000_000,
+        18_123_456,
+        33_000_000,
+        100_000_000,
+    ] {
+        split_events.extend(advance(&mut split, from, to));
+        let mut encoded = String::new();
+        split.encode(&mut encoded);
+        split = ObjectRegistry::decode(encoded.lines().skip(1)).unwrap();
+        from = to;
+    }
+    assert_eq!(split, whole);
+    whole_events.sort_by_key(|event| (event.tick, event.star_id, event.to));
+    split_events.sort_by_key(|event| (event.tick, event.star_id, event.to));
+    assert_eq!(split_events, whole_events);
+    assert!(
+        whole
+            .stars()
+            .any(|star| star.formed_at() > SimDuration::ZERO && star.metallicity() > 0.014)
+    );
+}
+
+#[test]
+fn exhausted_reservoir_skips_empty_formation_intervals() {
+    let (mut objects, config) = feedback_fixture(0.1, 0.014);
+    let elapsed = SimDuration::from_years(10_000_000_000_000).unwrap();
+    objects
+        .form_stars_between(
+            42,
+            config,
+            SimDuration::ZERO,
+            elapsed,
+            SimDuration::from_years(1).unwrap(),
+        )
+        .unwrap();
+    objects
+        .advance_stars_to(elapsed, SimDuration::from_years(1).unwrap())
+        .unwrap();
+    assert_eq!(objects.formation_sequence, 1_000_000);
+    assert!((stellar_and_gas_mass(&objects) - 0.1).abs() < 1e-12);
+}
+
+#[test]
+fn merger_feedback_invalidates_old_schedules_and_is_batch_independent() {
+    let mut objects = (0..100)
+        .find_map(|seed| {
+            let objects = ObjectRegistry::generate(seed, GenerationConfig::DEFAULT).unwrap();
+            let has_companion = objects
+                .star_systems()
+                .any(|system| !system.companion_star_ids().is_empty());
+            has_companion.then_some(objects)
+        })
+        .unwrap();
+    let system = objects
+        .star_systems()
+        .find(|system| !system.companion_star_ids().is_empty())
+        .unwrap()
+        .clone();
+    for (id, mass) in [(system.star_id, 1.0), (system.companion_star_ids[0], 0.9)] {
+        let mut star = generation::generate_star_with_birth(
+            id,
+            system.id,
+            SimDuration::ZERO,
+            crate::GasComposition::default(),
+            mass,
+        )
+        .unwrap();
+        if id != system.star_id {
+            star.orbital_elements = Some(test_orbit(0.001));
+        }
+        objects.stars.insert(id, star);
+    }
+    let total_before = stellar_and_gas_mass(&objects);
+    let mut split = objects.clone();
+    let tick = SimDuration::from_years(1).unwrap();
+    let mut whole_events = objects
+        .advance_stars_to(SimDuration::from_years(20_000_000_000).unwrap(), tick)
+        .unwrap();
+    let mut split_events = Vec::new();
+    for years in [100_000, 500_000, 1_000_000, 1_000_000_000, 20_000_000_000] {
+        split_events.extend(
+            split
+                .advance_stars_to(SimDuration::from_years(years).unwrap(), tick)
+                .unwrap(),
+        );
+    }
+    assert!(
+        whole_events
+            .iter()
+            .any(|event| event.interaction == Some(StellarInteractionKind::StellarMerger))
+    );
+    assert!((stellar_and_gas_mass(&objects) - total_before).abs() < 1e-10);
+    assert_eq!(split, objects);
+    whole_events.sort_by_key(|event| (event.tick, event.star_id, event.to));
+    split_events.sort_by_key(|event| (event.tick, event.star_id, event.to));
+    assert_eq!(split_events, whole_events);
 }

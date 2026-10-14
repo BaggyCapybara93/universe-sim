@@ -155,12 +155,45 @@ Run the validation suite:
 cargo test
 ```
 
+## Stellar feedback and chemical evolution
+
+Stellar mass lost during lifecycle transitions returns immediately to the local
+region's gas reservoir, including winds, envelope shedding, and explosive
+disruption. For core-collapse supernovae, the ejected mass is deposited at the
+transition to the neutron-star or black-hole remnant, where the stellar mass
+prescription applies the loss. Binary mergers and non-retained mass transfer
+also return their lost mass. Gas mixes by mass across hydrogen, helium, carbon,
+oxygen, iron, and other metals. Stellar stage changes cannot recreate mass
+previously lost or transferred.
+
+New stars inherit all six gas fractions at their formation time, with metallicity
+derived from those fractions. Their birth composition is saved and shown by
+`inspect --state universe.state S-…`; later planets use that stored composition.
+Star formation retains unused gas and subtracts the mass placed in the star and
+its disk. Feedback is processed chronologically before each formation interval,
+so a large time jump can recycle ejecta into subsequent generations. Empty
+formation intervals are skipped until stellar evolution can replenish the gas.
+
+Enrichment uses an intentionally simple, uncalibrated population prescription:
+giant/envelope ejecta convert 10% of their initial hydrogen to helium, then 5%
+of the resulting helium to metals; massive-star winds use 20% and 8%; explosive
+remnant/disruption ejecta use 35% and 20%. Added metals follow a fixed C/O/Fe/other
+split of 18/44/10/28%. Other losses retain the birth composition. These conversions
+preserve the modeled ejecta mass; nuclear binding-energy losses are omitted.
+This is instantaneous local mixing, not an expanding supernova-remnant or
+hydrodynamics model. Whole-universe matter accounting for the existing planetary
+formation, disk dissipation, and destruction prescriptions remains future work.
+
+State format 13 stores stellar birth compositions and versions the new evolution
+rules. Older states reconstruct birth compositions from stored metallicity and
+continue under the new rules; historical mass loss is not deposited again.
+
 ## Current boundaries
 
 - The configuration reader supports the settings demonstrated in
   `cosmos.toml`. It is deliberately not a complete TOML implementation.
 - State files carry explicit format, simulation, generation, and RNG versions.
-  The earlier clock-only version 1 and object versions 2 through 9 are migrated;
+  The earlier clock-only version 1 and object versions 2 through 12 are migrated;
   unknown versions are rejected rather than silently misinterpreted.
 - Galactic populations use disk, bulge, and halo spatial/velocity profiles,
   correlated age and metallicity, a broken-power-law stellar mass function,
@@ -193,8 +226,10 @@ cargo test
 - Every generated region contains a finite persisted star-forming gas reservoir.
   Its normalized hydrogen, helium, carbon, oxygen, iron, and other-metal mass
   fractions vary with galaxy morphology and survive save/load cycles.
-  At deterministic collapse intervals, gas is consumed with a fixed formation
-  efficiency to create new systems whose stars begin as age-zero protostars.
+  At deterministic collapse intervals, a fixed formation efficiency limits the
+  available stellar mass; only material placed in the new star and disk is
+  removed. New stars begin as age-zero protostars and inherit the local gas
+  composition. Stellar ejecta replenish and enrich the reservoir over time.
 - Evolved stars in binaries are checked against their periastron Roche lobes.
   Stable overflow transfers mass with partial retention; contact systems and
   sufficiently unstable mass ratios merge, remove the consumed companion, and

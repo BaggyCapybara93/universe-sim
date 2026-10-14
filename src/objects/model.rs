@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::chemistry::GasComposition;
 use crate::id::{
     AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, MoonId, PlanetId,
     ProtoplanetaryDiskId, StarId, StarSystemId,
@@ -268,6 +269,7 @@ pub struct Star {
     pub(super) formed_at: SimDuration,
     pub(super) age: SimDuration,
     pub(super) metallicity: f64,
+    pub(super) birth_composition: GasComposition,
     pub(super) luminosity: Luminosity,
     pub(super) temperature: Temperature,
     pub(super) stage: StellarStage,
@@ -311,6 +313,10 @@ impl Star {
 
     pub const fn metallicity(&self) -> f64 {
         self.metallicity
+    }
+
+    pub const fn birth_composition(&self) -> GasComposition {
+        self.birth_composition
     }
 
     pub const fn luminosity(&self) -> Luminosity {

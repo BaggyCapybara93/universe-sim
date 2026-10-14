@@ -77,7 +77,12 @@ impl ObjectRegistry {
         elapsed: SimDuration,
     ) -> Result<Vec<StellarTransition>, TimeError> {
         let mut candidates = Vec::new();
-        for system in self.star_systems.values() {
+        let affected_systems: BTreeSet<_> = trigger_ticks
+            .keys()
+            .filter_map(|id| self.stars.get(id).map(|star| star.system_id))
+            .collect();
+        for system_id in affected_systems {
+            let system = &self.star_systems[&system_id];
             for companion_id in &system.companion_star_ids {
                 let Some(companion) = self.stars.get(companion_id) else {
                     continue;
@@ -100,6 +105,10 @@ impl ObjectRegistry {
             else {
                 continue;
             };
+            if primary.current_mass.kilograms() == 0.0 || companion.current_mass.kilograms() == 0.0
+            {
+                continue;
+            }
             let separation_au =
                 orbit.semi_major_axis().astronomical_units() * (1.0 - orbit.eccentricity());
             let primary_radius_au =
@@ -138,6 +147,16 @@ impl ObjectRegistry {
                 || (primary_overflow || companion_overflow) && mass_ratio > 3.0
             {
                 let previous_stage = primary.stage;
+                let total_mass =
+                    primary.current_mass.solar_masses() + companion.current_mass.solar_masses();
+                let composition = primary
+                    .birth_composition
+                    .mixed_with(
+                        primary.current_mass.solar_masses(),
+                        companion.birth_composition,
+                        companion.current_mass.solar_masses(),
+                    )
+                    .map_err(|_| TimeError::Overflow)?;
                 let merged_mass = 0.9
                     * (primary.current_mass.solar_masses() + companion.current_mass.solar_masses());
                 let merged_mass =
@@ -148,6 +167,8 @@ impl ObjectRegistry {
                     .expect("merger primary exists");
                 primary.initial_mass = merged_mass;
                 primary.current_mass = merged_mass;
+                primary.birth_composition = composition;
+                primary.metallicity = composition.metallicity();
                 primary.epoch_age = SimDuration::ZERO;
                 primary.formed_at = elapsed;
                 primary.age = SimDuration::ZERO;
@@ -161,6 +182,8 @@ impl ObjectRegistry {
                 primary.luminosity = luminosity;
                 primary.temperature = temperature;
                 self.stars.remove(&companion_id);
+                self.return_gas(total_mass - merged_mass.solar_masses(), composition)
+                    .map_err(|_| TimeError::Overflow)?;
                 if let Some(system) = self.star_systems.get_mut(&system_id) {
                     system.companion_star_ids.retain(|id| *id != companion_id);
                 }
@@ -184,6 +207,7 @@ impl ObjectRegistry {
             let donor = self.stars.get(&donor_id).expect("binary donor exists");
             let donor_stage = donor.stage;
             let donor_old_solar = donor.current_mass.solar_masses();
+            let donor_composition = donor.birth_composition;
             let accretor_old_solar = self
                 .stars
                 .get(&accretor_id)
@@ -204,6 +228,13 @@ impl ObjectRegistry {
                 .get_mut(&accretor_id)
                 .expect("binary accretor exists")
                 .current_mass = accretor_mass;
+            self.return_gas(
+                donor_old_solar + accretor_old_solar
+                    - donor_mass.solar_masses()
+                    - accretor_mass.solar_masses(),
+                donor_composition,
+            )
+            .map_err(|_| TimeError::Overflow)?;
             let old_product = donor_old_solar * accretor_old_solar;
             let new_product = donor_mass.solar_masses() * accretor_mass.solar_masses();
             let axis_scale = (old_product / new_product).powi(2).clamp(0.25, 4.0);

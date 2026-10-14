@@ -426,6 +426,8 @@ fn generate_star_with_mass(
         formed_at: SimDuration::ZERO,
         age: epoch_age,
         metallicity,
+        birth_composition: GasComposition::from_metallicity(metallicity)
+            .map_err(|error| ObjectError(error.to_string()))?,
         luminosity,
         temperature,
         stage,
@@ -439,9 +441,10 @@ pub(super) fn generate_star_with_birth(
     id: StarId,
     system_id: StarSystemId,
     formed_at: SimDuration,
-    metallicity: f64,
+    birth_composition: GasComposition,
     mass_solar: f64,
 ) -> Result<Star, ObjectError> {
+    let metallicity = birth_composition.metallicity();
     let initial_mass = Mass::from_solar_masses(mass_solar)?;
     let stage = StellarStage::Protostar;
     let (current_mass, luminosity, temperature) =
@@ -455,6 +458,7 @@ pub(super) fn generate_star_with_birth(
         formed_at,
         age: SimDuration::ZERO,
         metallicity,
+        birth_composition,
         luminosity,
         temperature,
         stage,

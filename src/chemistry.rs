@@ -82,6 +82,52 @@ impl GasComposition {
         self.carbon + self.oxygen + self.iron + self.other_metals
     }
 
+    /// Mix two reservoirs by mass, conserving each component's mass.
+    pub fn mixed_with(
+        self,
+        mass: f64,
+        other: Self,
+        other_mass: f64,
+    ) -> Result<Self, CompositionError> {
+        let total = mass + other_mass;
+        if !mass.is_finite()
+            || !other_mass.is_finite()
+            || mass < 0.0
+            || other_mass < 0.0
+            || !total.is_finite()
+            || total <= 0.0
+        {
+            return Err(CompositionError(
+                "mixing requires nonnegative masses and a positive finite total".to_owned(),
+            ));
+        }
+        let weight = other_mass / total;
+        let mix = |a: f64, b: f64| a * (mass / total) + b * weight;
+        Self::new(
+            mix(self.hydrogen, other.hydrogen),
+            mix(self.helium, other.helium),
+            mix(self.carbon, other.carbon),
+            mix(self.oxygen, other.oxygen),
+            mix(self.iron, other.iron),
+            mix(self.other_metals, other.other_metals),
+        )
+    }
+
+    /// Toy population yield: convert some H to He, then some He to metals.
+    /// Fractions are model parameters, not calibrated nucleosynthesis tables.
+    pub(crate) fn processed(self, hydrogen_burned: f64, helium_burned: f64) -> Self {
+        let helium_added = self.hydrogen * hydrogen_burned;
+        let metals_added = (self.helium + helium_added) * helium_burned;
+        Self {
+            hydrogen: self.hydrogen - helium_added,
+            helium: self.helium + helium_added - metals_added,
+            carbon: self.carbon + metals_added * 0.18,
+            oxygen: self.oxygen + metals_added * 0.44,
+            iron: self.iron + metals_added * 0.10,
+            other_metals: self.other_metals + metals_added * 0.28,
+        }
+    }
+
     pub(crate) fn validate(self) -> Result<(), CompositionError> {
         let fractions = [
             self.hydrogen,
@@ -141,5 +187,30 @@ mod tests {
     #[test]
     fn rejects_unnormalized_composition() {
         assert!(GasComposition::new(0.7, 0.2, 0.0, 0.0, 0.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn mixing_conserves_each_component_and_handles_empty_reservoirs() {
+        let first = GasComposition::default();
+        let second = first.processed(0.35, 0.20);
+        second.validate().unwrap();
+        let mixed = first.mixed_with(3.0, second, 7.0).unwrap();
+        for fraction in [
+            GasComposition::hydrogen_fraction,
+            GasComposition::helium_fraction,
+            GasComposition::carbon_fraction,
+            GasComposition::oxygen_fraction,
+            GasComposition::iron_fraction,
+            GasComposition::other_metals_fraction,
+        ] {
+            assert!(
+                (fraction(mixed) * 10.0 - fraction(first) * 3.0 - fraction(second) * 7.0).abs()
+                    < 1e-12
+            );
+        }
+        assert_eq!(first.mixed_with(0.0, second, 1.0).unwrap(), second);
+        assert!(first.mixed_with(-1.0, second, 2.0).is_err());
+        assert!(first.mixed_with(f64::NAN, second, 1.0).is_err());
+        assert!(first.mixed_with(0.0, second, 0.0).is_err());
     }
 }

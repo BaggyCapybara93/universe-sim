@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BinaryHeap};
 
 use rayon::prelude::*;
 
+use crate::chemistry::GasComposition;
+use crate::id::StarId;
 use crate::rng::{StableRng, derive_object_seed};
 use crate::time::{SECONDS_PER_YEAR, SimDuration, TimeError};
 use crate::units::{Luminosity, Mass, Temperature, Velocity};
@@ -354,7 +356,86 @@ pub(super) fn roche_lobe_radius(separation: f64, mass_ratio: f64) -> f64 {
     separation * 0.49 * q_two_thirds / (0.6 * q_two_thirds + (1.0 + q_one_third).ln())
 }
 
+// Use physical seconds for ordering even when several transitions share a tick.
+// Birth time and initial mass invalidate queued entries after rejuvenating mergers.
+type ScheduledTransition = (u128, StarId, StellarStage, u128, u64);
+
+fn scheduled_transitions(
+    star: &Star,
+    until: SimDuration,
+) -> Result<Vec<ScheduledTransition>, TimeError> {
+    let target_age = star
+        .epoch_age
+        .checked_add(SimDuration::from_seconds(
+            until.seconds().saturating_sub(star.formed_at.seconds()),
+        ))
+        .ok_or(TimeError::Overflow)?;
+    let mut items = Vec::new();
+    for (threshold, stage) in stellar_schedule(star.initial_mass, star.metallicity)? {
+        if star.age < threshold && threshold <= target_age && stage > star.stage {
+            let seconds = star
+                .formed_at
+                .seconds()
+                .checked_add(threshold.seconds().saturating_sub(star.epoch_age.seconds()))
+                .ok_or(TimeError::Overflow)?;
+            items.push((
+                seconds,
+                star.id,
+                stage,
+                star.formed_at.seconds(),
+                star.initial_mass.kilograms().to_bits(),
+            ));
+        }
+    }
+    Ok(items)
+}
+
+fn ejecta_composition(
+    birth: GasComposition,
+    from: StellarStage,
+    to: StellarStage,
+) -> GasComposition {
+    match to {
+        StellarStage::NeutronStar | StellarStage::Disrupted => birth.processed(0.35, 0.20),
+        StellarStage::BlackHole if from == StellarStage::CoreCollapseSupernova => {
+            birth.processed(0.35, 0.20)
+        }
+        StellarStage::Supergiant
+        | StellarStage::WolfRayet
+        | StellarStage::PulsationalPairInstability => birth.processed(0.20, 0.08),
+        StellarStage::Giant
+        | StellarStage::CoreHeliumBurning
+        | StellarStage::AsymptoticGiantBranch
+        | StellarStage::PlanetaryNebula
+        | StellarStage::WhiteDwarf => birth.processed(0.10, 0.05),
+        _ => birth,
+    }
+}
+
 impl ObjectRegistry {
+    pub(super) fn next_stellar_transition_after(
+        &self,
+        elapsed: SimDuration,
+    ) -> Result<Option<SimDuration>, TimeError> {
+        let mut next = None;
+        for star in self.stars.values() {
+            for (threshold, stage) in stellar_schedule(star.initial_mass, star.metallicity)? {
+                if stage <= star.stage {
+                    continue;
+                }
+                let seconds = star
+                    .formed_at
+                    .seconds()
+                    .checked_add(threshold.seconds().saturating_sub(star.epoch_age.seconds()))
+                    .ok_or(TimeError::Overflow)?;
+                if seconds > elapsed.seconds() {
+                    next = Some(next.map_or(seconds, |old: u128| old.min(seconds)));
+                }
+            }
+        }
+        Ok(next.map(SimDuration::from_seconds))
+    }
+
     pub(crate) fn advance_stars_to(
         &mut self,
         elapsed: SimDuration,
@@ -362,26 +443,7 @@ impl ObjectRegistry {
     ) -> Result<Vec<StellarTransition>, TimeError> {
         let mut scheduled = BinaryHeap::new();
         let stars: Vec<_> = self.stars.values().collect();
-        let schedule_star = |star: &&Star| -> Result<Vec<_>, TimeError> {
-            let target_age = star
-                .epoch_age
-                .checked_add(SimDuration::from_seconds(
-                    elapsed.seconds().saturating_sub(star.formed_at.seconds()),
-                ))
-                .ok_or(TimeError::Overflow)?;
-            let mut items = Vec::new();
-            for (threshold, stage) in stellar_schedule(star.initial_mass, star.metallicity)? {
-                if star.age < threshold && threshold <= target_age && stage > star.stage {
-                    let event_elapsed =
-                        SimDuration::from_seconds(star.formed_at.seconds().saturating_add(
-                            threshold.seconds().saturating_sub(star.epoch_age.seconds()),
-                        ));
-                    let tick = tick_at_or_after(event_elapsed, tick_duration)?;
-                    items.push((tick, threshold.seconds(), star.id, stage));
-                }
-            }
-            Ok(items)
-        };
+        let schedule_star = |star: &&Star| scheduled_transitions(star, elapsed);
         let schedules: Result<Vec<_>, TimeError> = if stars.len() >= PARALLEL_BODY_THRESHOLD {
             stars.par_iter().map(schedule_star).collect()
         } else {
@@ -392,17 +454,34 @@ impl ObjectRegistry {
         }
 
         let mut transitions = Vec::new();
-        while let Some(Reverse((tick, _threshold, star_id, stage))) = scheduled.pop() {
-            let star = self.stars.get_mut(&star_id).expect("scheduled star exists");
+        while let Some(Reverse((seconds, star_id, stage, birth_seconds, initial_mass_bits))) =
+            scheduled.pop()
+        {
+            let Some(star) = self.stars.get_mut(&star_id) else {
+                continue;
+            };
+            if star.formed_at.seconds() != birth_seconds
+                || star.initial_mass.kilograms().to_bits() != initial_mass_bits
+                || star.stage >= stage
+            {
+                continue;
+            }
+            let event_time = SimDuration::from_seconds(seconds);
+            let tick = tick_at_or_after(event_time, tick_duration)?;
             let from = star.stage;
             let previous_mass = star.current_mass;
             star.stage = stage;
-            let (mass, luminosity, temperature) =
+            let (prescribed_mass, luminosity, temperature) =
                 stellar_properties(star.initial_mass, star.metallicity, stage)
+                    .map_err(|_| TimeError::Overflow)?;
+            // Stage prescriptions must never recreate previously lost/transferred mass.
+            let mass =
+                Mass::from_kilograms(prescribed_mass.kilograms().min(previous_mass.kilograms()))
                     .map_err(|_| TimeError::Overflow)?;
             star.current_mass = mass;
             star.luminosity = luminosity;
             star.temperature = temperature;
+            let composition = ejecta_composition(star.birth_composition, from, stage);
             let natal_kick_meters_per_second = natal_kick_speed(star, stage, tick);
             if natal_kick_meters_per_second > 0 {
                 let mut rng = StableRng::new(derive_object_seed(
@@ -420,6 +499,11 @@ impl ObjectRegistry {
                 )
                 .map_err(|_| TimeError::Overflow)?;
             }
+            self.return_gas(
+                previous_mass.solar_masses() - mass.solar_masses(),
+                composition,
+            )
+            .map_err(|_| TimeError::Overflow)?;
             let collision_impacts = self.apply_direct_planet_collisions(star_id, stage);
             let impacts = self.apply_stellar_impacts(star_id, previous_mass, mass, stage);
             transitions.push(StellarTransition {
@@ -444,13 +528,18 @@ impl ObjectRegistry {
                     related_star_id: None,
                 });
             }
+            let interactions =
+                self.resolve_binary_interactions(&BTreeMap::from([(star_id, tick)]), event_time)?;
+            for interaction in &interactions {
+                if interaction.interaction == Some(StellarInteractionKind::StellarMerger) {
+                    let merged = &self.stars[&interaction.star_id];
+                    for item in scheduled_transitions(merged, elapsed)? {
+                        scheduled.push(Reverse(item));
+                    }
+                }
+            }
+            transitions.extend(interactions);
         }
-        let trigger_ticks: BTreeMap<_, _> = transitions
-            .iter()
-            .filter(|transition| transition.interaction.is_none())
-            .map(|transition| (transition.star_id, transition.tick))
-            .collect();
-        transitions.extend(self.resolve_binary_interactions(&trigger_ticks, elapsed)?);
         for star in self.stars.values_mut() {
             star.age = star
                 .epoch_age

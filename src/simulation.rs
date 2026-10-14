@@ -22,9 +22,9 @@ use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
 
-pub const STATE_FORMAT_VERSION: u32 = 12;
-pub const SIMULATION_VERSION: u32 = 1;
-pub const GENERATION_VERSION: u32 = 9;
+pub const STATE_FORMAT_VERSION: u32 = 13;
+pub const SIMULATION_VERSION: u32 = 2;
+pub const GENERATION_VERSION: u32 = 10;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -515,12 +515,22 @@ impl Universe {
                 "unsupported state_format_version {state_format_version}; this build supports 2 through {STATE_FORMAT_VERSION}"
             )));
         }
-        require_version(&fields, "simulation_version", SIMULATION_VERSION)?;
+        require_version(
+            &fields,
+            "simulation_version",
+            if state_format_version >= 13 {
+                SIMULATION_VERSION
+            } else {
+                1
+            },
+        )?;
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 12 {
+            if state_format_version >= 13 {
                 GENERATION_VERSION
+            } else if state_format_version >= 12 {
+                9
             } else if state_format_version >= 11 {
                 8
             } else if state_format_version >= 10 {
@@ -1428,6 +1438,90 @@ mod tests {
     }
 
     #[test]
+    fn legacy_version_twelve_reconstructs_birth_composition_without_replaying_feedback() {
+        let mut universe = Universe::new(test_config()).unwrap();
+        universe.advance_ticks(1_000).unwrap();
+        let legacy = universe
+            .encode()
+            .lines()
+            .map(|line| {
+                if line.starts_with("S|") {
+                    line.split('|').take(19).collect::<Vec<_>>().join("|")
+                } else {
+                    line.replace("state_format_version=13", "state_format_version=12")
+                        .replace("simulation_version=2", "simulation_version=1")
+                        .replace("generation_version=10", "generation_version=9")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut restored = Universe::decode(&legacy).unwrap();
+        assert_eq!(restored, universe);
+        restored.advance_ticks(0).unwrap();
+        assert_eq!(
+            restored.objects().gas_composition(),
+            universe.objects().gas_composition()
+        );
+        assert_eq!(
+            restored.objects().gas_reservoir_solar_masses(),
+            universe.objects().gas_reservoir_solar_masses()
+        );
+    }
+
+    #[test]
+    fn enriched_galaxies_match_across_checkpoints_and_lazy_materialization() {
+        let mut config = test_config();
+        config.generation.galaxies = 2;
+        config.generation.star_systems = 16;
+        config.generation.star_mass_solar_min = 8.0;
+        config.generation.star_mass_solar_max = 30.0;
+        config.generation.planets_per_system_min = 0;
+        config.generation.planets_per_system_max = 0;
+        let mut whole = Universe::new(config).unwrap();
+        let galaxy_id = whole.galaxies().nth(1).unwrap().id();
+        let coordinate = RegionCoord::new(2, 3, 4);
+        whole.materialize_region_in(galaxy_id, coordinate).unwrap();
+        let mut split = whole.clone();
+        whole.advance_ticks(100_000).unwrap();
+        for ticks in [3_333, 6_667, 8_123, 21_877, 60_000] {
+            split.advance_ticks(ticks).unwrap();
+            split = Universe::decode(&split.encode()).unwrap();
+        }
+        // Compare feedback and birth properties; orbital integration has its own fidelity rules.
+        let feedback = |objects: &ObjectRegistry| {
+            (
+                objects.gas_reservoir_solar_masses(),
+                objects.gas_composition(),
+                objects
+                    .stars()
+                    .map(|star| {
+                        (
+                            star.id(),
+                            star.current_mass(),
+                            star.birth_composition(),
+                            star.formed_at(),
+                            star.stage(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(feedback(split.objects()), feedback(whole.objects()));
+        assert_eq!(
+            feedback(split.region_objects_in(galaxy_id, coordinate).unwrap()),
+            feedback(whole.region_objects_in(galaxy_id, coordinate).unwrap())
+        );
+        let expected = feedback(whole.region_objects_in(galaxy_id, coordinate).unwrap());
+        whole.unload_region_in(galaxy_id, coordinate).unwrap();
+        whole.materialize_region_in(galaxy_id, coordinate).unwrap();
+        assert_eq!(
+            feedback(whole.region_objects_in(galaxy_id, coordinate).unwrap()),
+            expected
+        );
+        assert!(whole.objects().gas_composition().metallicity() > 0.014);
+    }
+
+    #[test]
     fn state_round_trips_without_changing_history() {
         let mut universe = Universe::new(test_config()).unwrap();
         universe.advance_ticks(123).unwrap();
@@ -1600,8 +1694,9 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=12", "state_format_version=2")
-                        .replace("generation_version=9", "generation_version=1"),
+                    line.replace("state_format_version=13", "state_format_version=2")
+                        .replace("generation_version=10", "generation_version=1")
+                        .replace("simulation_version=2", "simulation_version=1"),
                 );
             }
         }
@@ -1632,16 +1727,17 @@ mod tests {
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=12", "state_format_version=6")
-                        .replace("generation_version=9", "generation_version=3")
+                    line.replace("state_format_version=13", "state_format_version=6")
+                        .replace("generation_version=10", "generation_version=3")
+                        .replace("simulation_version=2", "simulation_version=1")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=12"));
-        assert!(upgraded.contains("generation_version=9"));
+        assert!(upgraded.contains("state_format_version=13"));
+        assert!(upgraded.contains("generation_version=10"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

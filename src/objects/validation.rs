@@ -5,6 +5,11 @@ use super::{ObjectError, ObjectRegistry, planetary};
 
 impl ObjectRegistry {
     pub fn validate(&self) -> Result<(), ObjectError> {
+        if !self.gas_reservoir_solar_masses.is_finite() || self.gas_reservoir_solar_masses < 0.0 {
+            return Err(ObjectError(
+                "gas reservoir mass must be finite and nonnegative".to_owned(),
+            ));
+        }
         self.gas_composition
             .validate()
             .map_err(|error| ObjectError(error.to_string()))?;
@@ -156,6 +161,16 @@ impl ObjectRegistry {
         }
 
         for (star_id, star) in &self.stars {
+            star.birth_composition
+                .validate()
+                .map_err(|error| ObjectError(error.to_string()))?;
+            if !star.metallicity.is_finite()
+                || (star.birth_composition.metallicity() - star.metallicity).abs() > 1e-12
+            {
+                return Err(ObjectError(format!(
+                    "{star_id} metallicity differs from its birth composition"
+                )));
+            }
             if *star_id != star.id {
                 return Err(ObjectError(
                     "star registry key does not match its ID".to_owned(),

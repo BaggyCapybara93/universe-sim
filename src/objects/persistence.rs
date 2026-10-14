@@ -78,7 +78,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = star.velocity.meters_per_second();
             writeln!(
                 output,
-                "S|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "S|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 star.id.value(),
                 star.system_id.value(),
                 float_bits(star.initial_mass.kilograms()),
@@ -97,6 +97,12 @@ impl ObjectRegistry {
                 float_bits(vz),
                 encode_optional_orbit(star.orbital_elements),
                 star.formed_at.seconds(),
+                float_bits(star.birth_composition.hydrogen_fraction()),
+                float_bits(star.birth_composition.helium_fraction()),
+                float_bits(star.birth_composition.carbon_fraction()),
+                float_bits(star.birth_composition.oxygen_fraction()),
+                float_bits(star.birth_composition.iron_fraction()),
+                float_bits(star.birth_composition.other_metals_fraction()),
             )
             .expect("writing to a String cannot fail");
         }
@@ -428,13 +434,13 @@ impl ObjectRegistry {
                     )?;
                 }
                 Some("S") => {
-                    if !matches!(fields.len(), 8 | 9 | 11 | 18 | 19) {
+                    if !matches!(fields.len(), 8 | 9 | 11 | 18 | 19 | 25) {
                         return Err(ObjectError(format!(
-                            "star record has {} fields; expected 8, 9, 11, 18, or 19",
+                            "star record has {} fields; expected 8, 9, 11, 18, 19, or 25",
                             fields.len()
                         )));
                     }
-                    let is_current = matches!(fields.len(), 11 | 18 | 19);
+                    let is_current = matches!(fields.len(), 11 | 18 | 19 | 25);
                     let metallicity_index = if is_current { 7 } else { 5 };
                     let metallicity = parse_float_bits(fields[metallicity_index], "metallicity")?;
                     if !metallicity.is_finite() || metallicity < 0.0 {
@@ -472,13 +478,26 @@ impl ObjectRegistry {
                         initial_mass,
                         current_mass,
                         epoch_age,
-                        formed_at: if fields.len() == 19 {
+                        formed_at: if fields.len() >= 19 {
                             SimDuration::from_seconds(parse_number(fields[18], "formation time")?)
                         } else {
                             SimDuration::ZERO
                         },
                         age,
                         metallicity,
+                        birth_composition: if fields.len() == 25 {
+                            GasComposition::new(
+                                parse_float_bits(fields[19], "birth hydrogen")?,
+                                parse_float_bits(fields[20], "birth helium")?,
+                                parse_float_bits(fields[21], "birth carbon")?,
+                                parse_float_bits(fields[22], "birth oxygen")?,
+                                parse_float_bits(fields[23], "birth iron")?,
+                                parse_float_bits(fields[24], "birth other metals")?,
+                            )
+                        } else {
+                            GasComposition::from_metallicity(metallicity)
+                        }
+                        .map_err(|error| ObjectError(error.to_string()))?,
                         luminosity: Luminosity::from_watts(parse_float_bits(
                             fields[luminosity_index],
                             "star luminosity",

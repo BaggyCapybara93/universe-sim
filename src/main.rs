@@ -653,6 +653,7 @@ fn print_object(object: ObjectRef<'_>) {
             println!("  Age: {}", star.age());
             println!("  Stage: {}", star.stage());
             println!("  Metallicity: {:.6}", star.metallicity());
+            print_composition("Birth composition", star.birth_composition());
             println!(
                 "  Luminosity: {:.6} solar luminosities",
                 star.luminosity().solar_luminosities()
@@ -823,8 +824,12 @@ fn parse_tick_duration(value: &str) -> Result<TickDuration, String> {
 }
 
 fn print_gas_composition(composition: GasComposition) {
+    print_composition("Gas composition", composition);
+}
+
+fn print_composition(label: &str, composition: GasComposition) {
     println!(
-        "  Gas composition: H {:.3}%, He {:.3}%, C {:.4}%, O {:.4}%, Fe {:.4}%, other metals {:.4}%",
+        "  {label}: H {:.3}%, He {:.3}%, C {:.4}%, O {:.4}%, Fe {:.4}%, other metals {:.4}%",
         composition.hydrogen_fraction() * 100.0,
         composition.helium_fraction() * 100.0,
         composition.carbon_fraction() * 100.0,

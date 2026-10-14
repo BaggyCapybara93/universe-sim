@@ -161,6 +161,22 @@ impl ObjectRegistry {
         self.gas_composition
     }
 
+    pub(super) fn return_gas(
+        &mut self,
+        mass: f64,
+        composition: GasComposition,
+    ) -> Result<(), ObjectError> {
+        if mass == 0.0 {
+            return Ok(());
+        }
+        self.gas_composition = self
+            .gas_composition
+            .mixed_with(self.gas_reservoir_solar_masses, composition, mass)
+            .map_err(|error| ObjectError(error.to_string()))?;
+        self.gas_reservoir_solar_masses += mass;
+        Ok(())
+    }
+
     pub(crate) fn form_stars_between(
         &mut self,
         seed: u64,
@@ -180,6 +196,10 @@ impl ObjectRegistry {
             .copied()
             .ok_or_else(|| ObjectError("star formation requires a galaxy".to_owned()))?;
         let mut events = Vec::new();
+        self.formation_sequence = self.formation_sequence.max(
+            u64::try_from(from.seconds() / interval.seconds())
+                .map_err(|_| ObjectError("star-formation sequence overflow".to_owned()))?,
+        );
         loop {
             let sequence = self.formation_sequence.saturating_add(1);
             let formation_time = interval
@@ -192,6 +212,11 @@ impl ObjectRegistry {
             if formation_time <= from {
                 continue;
             }
+            // Feedback at or before this collapse must precede the new birth.
+            events.extend(
+                self.advance_stars_to(formation_time, tick_duration)
+                    .map_err(|error| ObjectError(error.to_string()))?,
+            );
             let mut rng = StableRng::new(derive_object_seed(
                 seed,
                 sequence,
@@ -201,11 +226,22 @@ impl ObjectRegistry {
                 self.gas_reservoir_solar_masses * STAR_FORMATION_EFFICIENCY;
             let maximum_mass = config.star_mass_solar_max.min(available_stellar_mass);
             if maximum_mass < config.star_mass_solar_min {
-                break;
+                // Skip empty collapse opportunities, but revisit after the next
+                // stellar transition, which may replenish an exhausted reservoir.
+                let next = self
+                    .next_stellar_transition_after(formation_time)
+                    .map_err(|error| ObjectError(error.to_string()))?;
+                let skip_until = next.map_or(to.seconds(), |time| {
+                    time.seconds().saturating_sub(1).min(to.seconds())
+                });
+                self.formation_sequence = self.formation_sequence.max(
+                    u64::try_from(skip_until / interval.seconds())
+                        .map_err(|_| ObjectError("star-formation sequence overflow".to_owned()))?,
+                );
+                continue;
             }
             let mass_solar =
                 sample_stellar_mass(&mut rng, config.star_mass_solar_min, maximum_mass);
-            let gas_consumed = mass_solar / STAR_FORMATION_EFFICIENCY;
             let system_id = StarSystemId::new(derive_object_seed(
                 seed,
                 sequence,
@@ -233,12 +269,11 @@ impl ObjectRegistry {
                 220_000.0 * cos_angle,
                 0.0,
             )?;
-            let metallicity = (0.004 + 0.020 * rng.next_f64()).clamp(0.0001, 0.04);
             let mut star = generation::generate_star_with_birth(
                 star_id,
                 system_id,
                 formation_time,
-                metallicity,
+                self.gas_composition,
                 mass_solar,
             )?;
             star.position = position;
@@ -257,12 +292,21 @@ impl ObjectRegistry {
                 &mut rng,
             )?;
             disk.formed_at = formation_time;
+            disk.initial_mass = Mass::from_solar_masses(
+                disk.initial_mass
+                    .solar_masses()
+                    .min((self.gas_reservoir_solar_masses - mass_solar).max(0.0)),
+            )?;
+            disk.remaining_mass = disk.initial_mass;
             disk.dissipates_at = formation_time
                 .checked_add(
                     SimDuration::from_years(10_000_000)
                         .map_err(|error| ObjectError(error.to_string()))?,
                 )
                 .ok_or_else(|| ObjectError("protoplanetary disk lifetime overflow".to_owned()))?;
+            // Efficiency limits the collapsing mass; unused gas remains in the
+            // reservoir instead of disappearing. Fund the disk as well as the star.
+            let gas_consumed = mass_solar + disk.initial_mass.solar_masses();
             self.protoplanetary_disks.insert(disk_id, disk);
             self.star_systems.insert(
                 system_id,
@@ -353,7 +397,7 @@ impl ObjectRegistry {
                 star.metallicity,
             );
             let radii = super::planetary::stable_orbital_radii(&mut rng, count, config);
-            let material = self.gas_composition;
+            let material = star.birth_composition;
             let mut planet_ids = Vec::new();
             let mut moon_ids = Vec::new();
             for (index, orbit_au) in radii.into_iter().enumerate() {
