@@ -184,16 +184,44 @@ This is instantaneous local mixing, not an expanding supernova-remnant or
 hydrodynamics model. Whole-universe matter accounting for the existing planetary
 formation, disk dissipation, and destruction prescriptions remains future work.
 
-State format 13 stores stellar birth compositions and versions the new evolution
-rules. Older states reconstruct birth compositions from stored metallicity and
-continue under the new rules; historical mass loss is not deposited again.
+State format 13 stores stellar birth compositions. Older states reconstruct
+birth compositions from stored metallicity; historical mass loss is not
+deposited again.
+
+## Compact-binary outcomes
+
+White-dwarf, neutron-star, and black-hole companions now receive a deterministic
+gravitational-wave coalescence time once both stars are compact. The model uses
+the quadrupole circular-orbit inspiral time with an approximate eccentricity
+factor. It schedules the merger chronologically alongside stellar transitions,
+including during large time jumps, and records the companion ID in the event.
+`simulate` prints new events and `events` displays them from saved history.
+
+- White-dwarf pairs above 1.44 solar masses produce a Type Ia supernova;
+  lighter pairs leave a white dwarf. A white dwarf also detonates if binary
+  mass transfer takes it above that threshold.
+- Neutron-star pairs and neutron-star/black-hole pairs produce a kilonova and
+  leave a neutron star or black hole according to the retained mass.
+- Black-hole pairs leave a black hole and produce a black-hole merger event.
+  Other mixed compact pairs produce a compact-object merger event.
+
+These are population prescriptions. Type Ia ejecta return to the source cloud
+with a fixed iron-rich mixture and can trigger a cloud shock; kilonova ejecta
+use a fixed heavy-element mixture. Black-hole pairs lose 5% of their mass as
+gravitational-wave energy. The model schedules the merger from stored orbital
+elements but does not continuously shrink the displayed orbit or resolve the
+transient light curve. Generated binaries are usually wider than the compact
+orbits needed for a merger within a typical run.
+
+State format 16 versions the new simulation rules. Version 15 states load and
+continue with compact-binary outcomes enabled.
 
 ## Current boundaries
 
 - The configuration reader supports the settings demonstrated in
   `cosmos.toml`. It is deliberately not a complete TOML implementation.
 - State files carry explicit format, simulation, generation, and RNG versions.
-  The earlier clock-only version 1 and object versions 2 through 12 are migrated;
+  The earlier clock-only version 1 and object versions 2 through 15 are migrated;
   unknown versions are rejected rather than silently misinterpreted.
 - Galactic populations use disk, bulge, and halo spatial/velocity profiles,
   correlated age and metallicity, a broken-power-law stellar mass function,

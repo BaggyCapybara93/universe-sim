@@ -567,6 +567,10 @@ pub enum StellarInteractionKind {
     MassTransfer,
     StellarMerger,
     PlanetaryCollision,
+    TypeIaSupernova,
+    Kilonova,
+    BlackHoleMerger,
+    CompactObjectMerger,
 }
 
 impl StellarInteractionKind {
@@ -576,6 +580,10 @@ impl StellarInteractionKind {
             Self::MassTransfer => "mass_transfer",
             Self::StellarMerger => "stellar_merger",
             Self::PlanetaryCollision => "planetary_collision",
+            Self::TypeIaSupernova => "type_ia_supernova",
+            Self::Kilonova => "kilonova",
+            Self::BlackHoleMerger => "black_hole_merger",
+            Self::CompactObjectMerger => "compact_object_merger",
         }
     }
 
@@ -585,6 +593,10 @@ impl StellarInteractionKind {
             "mass_transfer" => Ok(Self::MassTransfer),
             "stellar_merger" => Ok(Self::StellarMerger),
             "planetary_collision" => Ok(Self::PlanetaryCollision),
+            "type_ia_supernova" => Ok(Self::TypeIaSupernova),
+            "kilonova" => Ok(Self::Kilonova),
+            "black_hole_merger" => Ok(Self::BlackHoleMerger),
+            "compact_object_merger" => Ok(Self::CompactObjectMerger),
             _ => Err(ObjectError(format!(
                 "unknown stellar interaction '{value}'"
             ))),

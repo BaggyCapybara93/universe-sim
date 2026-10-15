@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::GenerationConfig;
-use crate::id::GalaxyId;
+use crate::id::{GalaxyId, StarId};
 use crate::orbital::OrbitalElements;
 use crate::units::{Angle, Length, Mass, Position};
 
@@ -421,6 +421,217 @@ fn roche_overflow_transfers_mass_and_contact_merges() {
     assert!(selected.0.star(companion_id).is_none());
     assert!((stellar_and_gas_mass(&selected.0) - total_before).abs() < 1e-12);
     selected.0.validate().unwrap();
+}
+
+fn compact_binary_fixture(
+    primary_stage: StellarStage,
+    primary_mass: f64,
+    companion_stage: StellarStage,
+    companion_mass: f64,
+) -> (ObjectRegistry, StarId, StarId) {
+    let mut objects = (0..100)
+        .find_map(|seed| {
+            let objects = ObjectRegistry::generate(seed, GenerationConfig::DEFAULT).unwrap();
+            let has_companion = objects
+                .star_systems()
+                .any(|system| !system.companion_star_ids().is_empty());
+            has_companion.then_some(objects)
+        })
+        .unwrap();
+    let system = objects
+        .star_systems()
+        .find(|system| !system.companion_star_ids().is_empty())
+        .unwrap()
+        .clone();
+    let companion_id = system.companion_star_ids[0];
+    for (id, stage, mass) in [
+        (system.star_id, primary_stage, primary_mass),
+        (companion_id, companion_stage, companion_mass),
+    ] {
+        let star = objects.stars.get_mut(&id).unwrap();
+        star.initial_mass = Mass::from_solar_masses(mass).unwrap();
+        star.current_mass = star.initial_mass;
+        star.stage = stage;
+        star.formed_at = SimDuration::ZERO;
+        star.epoch_age = stellar::stellar_schedule(star.initial_mass, star.metallicity)
+            .unwrap()
+            .into_iter()
+            .find(|(_, next)| {
+                matches!(
+                    next,
+                    StellarStage::WhiteDwarf | StellarStage::NeutronStar | StellarStage::BlackHole
+                )
+            })
+            .unwrap()
+            .0;
+        star.age = star.epoch_age;
+    }
+    objects
+        .stars
+        .get_mut(&companion_id)
+        .unwrap()
+        .orbital_elements = Some(test_orbit(0.001));
+    (objects, system.star_id, companion_id)
+}
+
+#[test]
+fn compact_binary_inspiral_produces_distinct_outcomes() {
+    for (primary_stage, primary_mass, companion_stage, companion_mass, outcome, remnant) in [
+        (
+            StellarStage::WhiteDwarf,
+            0.8,
+            StellarStage::WhiteDwarf,
+            0.8,
+            StellarInteractionKind::TypeIaSupernova,
+            StellarStage::Disrupted,
+        ),
+        (
+            StellarStage::NeutronStar,
+            1.4,
+            StellarStage::NeutronStar,
+            1.4,
+            StellarInteractionKind::Kilonova,
+            StellarStage::BlackHole,
+        ),
+        (
+            StellarStage::NeutronStar,
+            1.2,
+            StellarStage::NeutronStar,
+            1.2,
+            StellarInteractionKind::Kilonova,
+            StellarStage::NeutronStar,
+        ),
+        (
+            StellarStage::NeutronStar,
+            1.4,
+            StellarStage::BlackHole,
+            5.0,
+            StellarInteractionKind::Kilonova,
+            StellarStage::BlackHole,
+        ),
+        (
+            StellarStage::BlackHole,
+            5.0,
+            StellarStage::BlackHole,
+            5.0,
+            StellarInteractionKind::BlackHoleMerger,
+            StellarStage::BlackHole,
+        ),
+        (
+            StellarStage::WhiteDwarf,
+            0.6,
+            StellarStage::WhiteDwarf,
+            0.6,
+            StellarInteractionKind::CompactObjectMerger,
+            StellarStage::WhiteDwarf,
+        ),
+        (
+            StellarStage::WhiteDwarf,
+            0.6,
+            StellarStage::BlackHole,
+            5.0,
+            StellarInteractionKind::CompactObjectMerger,
+            StellarStage::BlackHole,
+        ),
+    ] {
+        let (mut objects, primary_id, companion_id) =
+            compact_binary_fixture(primary_stage, primary_mass, companion_stage, companion_mass);
+        let merger = objects
+            .compact_merger_at(primary_id, companion_id)
+            .unwrap()
+            .unwrap();
+        assert!(merger > 0 && merger < SimDuration::from_years(10_000_000).unwrap().seconds());
+        let before = objects
+            .advance_stars_to(
+                SimDuration::from_seconds(merger - 1),
+                SimDuration::from_years(1).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            before
+                .iter()
+                .all(|event| event.related_star_id != Some(companion_id))
+        );
+        let events = objects
+            .advance_stars_to(
+                SimDuration::from_seconds(merger),
+                SimDuration::from_years(1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].interaction, Some(outcome));
+        assert_eq!(events[0].related_star_id, Some(companion_id));
+        assert_eq!(objects.star(primary_id).unwrap().stage(), remnant);
+        assert!(objects.star(companion_id).is_none());
+        if outcome == StellarInteractionKind::TypeIaSupernova {
+            objects
+                .advance_orbits_to(SimDuration::from_seconds(merger))
+                .unwrap();
+        }
+        objects.validate().unwrap();
+        assert!(
+            objects
+                .advance_stars_to(
+                    SimDuration::from_years(10_000_000).unwrap(),
+                    SimDuration::from_years(1).unwrap()
+                )
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn compact_binary_merger_is_checkpoint_and_save_independent() {
+    let (mut whole, primary_id, companion_id) = compact_binary_fixture(
+        StellarStage::NeutronStar,
+        1.4,
+        StellarStage::NeutronStar,
+        1.4,
+    );
+    let mut split = whole.clone();
+    let end = SimDuration::from_years(1_000_000).unwrap();
+    let tick = SimDuration::from_years(1).unwrap();
+    let whole_events = whole.advance_stars_to(end, tick).unwrap();
+    split
+        .advance_stars_to(SimDuration::from_years(10_000).unwrap(), tick)
+        .unwrap();
+    let mut encoded = String::new();
+    split.encode(&mut encoded);
+    split = ObjectRegistry::decode(encoded.lines().skip(1)).unwrap();
+    let split_events = split.advance_stars_to(end, tick).unwrap();
+    assert_eq!(split, whole);
+    assert_eq!(split_events, whole_events);
+    assert_eq!(split_events[0].star_id, primary_id);
+    assert_eq!(split_events[0].related_star_id, Some(companion_id));
+}
+
+#[test]
+fn accreting_white_dwarf_detonates_at_chandrasekhar_mass() {
+    let (mut objects, primary_id, companion_id) = compact_binary_fixture(
+        StellarStage::WhiteDwarf,
+        1.42,
+        StellarStage::WhiteDwarf,
+        1.0,
+    );
+    let total_before = stellar_and_gas_mass(&objects);
+    let donor = objects.stars.get_mut(&companion_id).unwrap();
+    donor.stage = StellarStage::Giant;
+    donor.orbital_elements = Some(test_orbit(1.0));
+    let events = objects
+        .resolve_binary_interactions(&BTreeMap::from([(primary_id, 1)]), SimDuration::ZERO)
+        .unwrap();
+    assert!(events.iter().any(|event| event.interaction
+        == Some(StellarInteractionKind::TypeIaSupernova)
+        && event.star_id == primary_id));
+    assert_eq!(
+        objects.star(primary_id).unwrap().stage(),
+        StellarStage::Disrupted
+    );
+    assert_eq!(objects.star(primary_id).unwrap().mass().solar_masses(), 0.0);
+    assert!(objects.gas_composition().iron_fraction() > 0.0);
+    assert!((stellar_and_gas_mass(&objects) - total_before).abs() < 1e-12);
+    objects.validate().unwrap();
 }
 
 #[test]

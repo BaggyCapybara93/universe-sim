@@ -433,6 +433,15 @@ impl ObjectRegistry {
                 }
             }
         }
+        for system in self.star_systems.values() {
+            for companion_id in &system.companion_star_ids {
+                if let Some(seconds) = self.compact_merger_at(system.star_id, *companion_id)?
+                    && seconds > elapsed.seconds()
+                {
+                    next = Some(next.map_or(seconds, |old: u128| old.min(seconds)));
+                }
+            }
+        }
         Ok(next.map(SimDuration::from_seconds))
     }
 
@@ -453,10 +462,61 @@ impl ObjectRegistry {
             scheduled.push(Reverse(item));
         }
 
+        let mut compact_mergers = BinaryHeap::new();
+        for system in self.star_systems.values() {
+            for companion_id in &system.companion_star_ids {
+                if let Some(seconds) = self.compact_merger_at(system.star_id, *companion_id)? {
+                    compact_mergers.push(Reverse((seconds, system.star_id, *companion_id)));
+                }
+            }
+        }
+
         let mut transitions = Vec::new();
-        while let Some(Reverse((seconds, star_id, stage, birth_seconds, initial_mass_bits))) =
-            scheduled.pop()
-        {
+        loop {
+            let next_compact = compact_mergers
+                .peek()
+                .map(|Reverse((seconds, _, _))| *seconds);
+            let next_stellar = scheduled
+                .peek()
+                .map(|Reverse((seconds, _, _, _, _))| *seconds);
+            if let Some(seconds) = next_compact
+                && seconds <= elapsed.seconds()
+                && next_stellar.is_none_or(|stellar| seconds <= stellar)
+            {
+                let Reverse((_, primary_id, companion_id)) = compact_mergers.pop().unwrap();
+                if self.compact_merger_at(primary_id, companion_id)? != Some(seconds) {
+                    continue;
+                }
+                transitions.push(self.resolve_compact_merger(
+                    primary_id,
+                    companion_id,
+                    SimDuration::from_seconds(seconds),
+                    tick_duration,
+                )?);
+                if let Some(system) = self
+                    .stars
+                    .get(&primary_id)
+                    .and_then(|star| self.star_systems.get(&star.system_id))
+                {
+                    for companion_id in &system.companion_star_ids {
+                        if let Some(next_seconds) =
+                            self.compact_merger_at(primary_id, *companion_id)?
+                        {
+                            compact_mergers.push(Reverse((
+                                next_seconds,
+                                primary_id,
+                                *companion_id,
+                            )));
+                        }
+                    }
+                }
+                continue;
+            }
+            let Some(Reverse((seconds, star_id, stage, birth_seconds, initial_mass_bits))) =
+                scheduled.pop()
+            else {
+                break;
+            };
             let Some(star) = self.stars.get_mut(&star_id) else {
                 continue;
             };
@@ -544,6 +604,23 @@ impl ObjectRegistry {
                 }
             }
             transitions.extend(interactions);
+            if let Some(system) = self
+                .stars
+                .get(&star_id)
+                .and_then(|star| self.star_systems.get(&star.system_id))
+            {
+                for companion_id in &system.companion_star_ids {
+                    if let Some(merger_seconds) =
+                        self.compact_merger_at(system.star_id, *companion_id)?
+                    {
+                        compact_mergers.push(Reverse((
+                            merger_seconds,
+                            system.star_id,
+                            *companion_id,
+                        )));
+                    }
+                }
+            }
         }
         for star in self.stars.values_mut() {
             star.age = star

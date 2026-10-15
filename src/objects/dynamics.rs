@@ -15,6 +15,189 @@ use super::{
 };
 
 impl ObjectRegistry {
+    /// Coalescence time from the quadrupole inspiral prescription. The
+    /// eccentricity factor is an approximation for an initially eccentric orbit.
+    pub(super) fn compact_merger_at(
+        &self,
+        primary_id: StarId,
+        companion_id: StarId,
+    ) -> Result<Option<u128>, TimeError> {
+        let (Some(primary), Some(companion)) =
+            (self.stars.get(&primary_id), self.stars.get(&companion_id))
+        else {
+            return Ok(None);
+        };
+        if !is_compact(primary.stage) || !is_compact(companion.stage) {
+            return Ok(None);
+        }
+        let Some(orbit) = companion.orbital_elements else {
+            return Ok(None);
+        };
+        let onset = |star: &super::Star| -> Result<u128, TimeError> {
+            let threshold = super::stellar::stellar_schedule(star.initial_mass, star.metallicity)?
+                .into_iter()
+                .find(|(_, stage)| is_compact(*stage))
+                .map_or(0, |(age, _)| age.seconds());
+            Ok(star
+                .formed_at
+                .seconds()
+                .saturating_add(threshold.saturating_sub(star.epoch_age.seconds())))
+        };
+        let start = onset(primary)?
+            .max(onset(companion)?)
+            .max(orbit.epoch().seconds());
+        let a = orbit.semi_major_axis().meters();
+        let m1 = primary.current_mass.kilograms();
+        let m2 = companion.current_mass.kilograms();
+        if m1 <= 0.0 || m2 <= 0.0 {
+            return Ok(None);
+        }
+        const LIGHT_SPEED: f64 = 299_792_458.0;
+        let e2 = orbit.eccentricity().powi(2);
+        let eccentricity_factor =
+            (1.0 - e2).powf(3.5) / (1.0 + 73.0 / 24.0 * e2 + 37.0 / 96.0 * e2 * e2);
+        let seconds = 5.0 / 256.0 * LIGHT_SPEED.powi(5) * a.powi(4)
+            / (GRAVITATIONAL_CONSTANT.powi(3) * m1 * m2 * (m1 + m2))
+            * eccentricity_factor;
+        if !seconds.is_finite() || seconds >= u128::MAX as f64 {
+            return Ok(None);
+        }
+        let delay = seconds.ceil().max(1.0) as u128;
+        Ok(start.checked_add(delay))
+    }
+
+    pub(super) fn resolve_compact_merger(
+        &mut self,
+        primary_id: StarId,
+        companion_id: StarId,
+        at: SimDuration,
+        tick_duration: SimDuration,
+    ) -> Result<StellarTransition, TimeError> {
+        let primary = self.stars.get(&primary_id).expect("compact primary exists");
+        let companion = self
+            .stars
+            .get(&companion_id)
+            .expect("compact companion exists");
+        let from = primary.stage;
+        let companion_stage = companion.stage;
+        let system_id = primary.system_id;
+        let old_mass = primary.current_mass;
+        let total = old_mass.solar_masses() + companion.current_mass.solar_masses();
+        let composition = primary
+            .birth_composition
+            .mixed_with(
+                old_mass.solar_masses(),
+                companion.birth_composition,
+                companion.current_mass.solar_masses(),
+            )
+            .map_err(|_| TimeError::Overflow)?;
+        let both_white_dwarfs =
+            from == StellarStage::WhiteDwarf && companion_stage == StellarStage::WhiteDwarf;
+        let type_ia = both_white_dwarfs && total >= 1.44;
+        let contains_neutron_star =
+            from == StellarStage::NeutronStar || companion_stage == StellarStage::NeutronStar;
+        let both_black_holes =
+            from == StellarStage::BlackHole && companion_stage == StellarStage::BlackHole;
+        let (stage, interaction, retained_fraction) = if type_ia {
+            (
+                StellarStage::Disrupted,
+                StellarInteractionKind::TypeIaSupernova,
+                0.0,
+            )
+        } else if both_white_dwarfs {
+            (
+                StellarStage::WhiteDwarf,
+                StellarInteractionKind::CompactObjectMerger,
+                0.98,
+            )
+        } else if contains_neutron_star {
+            let stage = if from == StellarStage::BlackHole
+                || companion_stage == StellarStage::BlackHole
+                || total * 0.95 > 2.5
+            {
+                StellarStage::BlackHole
+            } else {
+                StellarStage::NeutronStar
+            };
+            (stage, StellarInteractionKind::Kilonova, 0.95)
+        } else {
+            (
+                StellarStage::BlackHole,
+                if both_black_holes {
+                    StellarInteractionKind::BlackHoleMerger
+                } else {
+                    StellarInteractionKind::CompactObjectMerger
+                },
+                0.95,
+            )
+        };
+        let retained =
+            Mass::from_solar_masses(total * retained_fraction).map_err(|_| TimeError::Overflow)?;
+        let (_, luminosity, temperature) =
+            super::stellar::stellar_properties(retained, composition.metallicity(), stage)
+                .map_err(|_| TimeError::Overflow)?;
+        let primary = self
+            .stars
+            .get_mut(&primary_id)
+            .expect("compact primary exists");
+        primary.initial_mass = retained;
+        primary.current_mass = retained;
+        primary.birth_composition = composition;
+        primary.metallicity = composition.metallicity();
+        primary.formed_at = at;
+        primary.epoch_age = if stage == StellarStage::Disrupted {
+            SimDuration::ZERO
+        } else {
+            super::stellar::stellar_schedule(retained, primary.metallicity)?
+                .into_iter()
+                .find(|(_, candidate)| is_compact(*candidate))
+                .map_or(SimDuration::ZERO, |(age, _)| age)
+        };
+        primary.age = primary.epoch_age;
+        primary.stage = stage;
+        primary.luminosity = luminosity;
+        primary.temperature = temperature;
+        self.stars.remove(&companion_id);
+        self.star_systems
+            .get_mut(&system_id)
+            .expect("compact system exists")
+            .companion_star_ids
+            .retain(|id| *id != companion_id);
+        if !both_black_holes {
+            // The retained fraction includes prompt ejecta for matter-bearing
+            // mergers. Black-hole coalescence loses mass to gravitational waves.
+            let ejecta_composition = if type_ia {
+                type_ia_yield()
+            } else if contains_neutron_star {
+                crate::chemistry::GasComposition::new(0.0, 0.0, 0.1, 0.2, 0.1, 0.6)
+                    .expect("fixed kilonova yield is normalized")
+            } else {
+                composition
+            };
+            self.return_gas(
+                primary_id,
+                total - retained.solar_masses(),
+                ejecta_composition,
+            )
+            .map_err(|_| TimeError::Overflow)?;
+        }
+        if type_ia {
+            self.apply_supernova_shock(primary_id, at, total)
+                .map_err(|_| TimeError::Overflow)?;
+        }
+        let impacts = self.apply_stellar_impacts(primary_id, old_mass, retained, stage);
+        Ok(StellarTransition {
+            tick: super::tick_at_or_after(at, tick_duration)?,
+            star_id: primary_id,
+            from,
+            to: stage,
+            impacts,
+            natal_kick_meters_per_second: 0,
+            interaction: Some(interaction),
+            related_star_id: Some(companion_id),
+        })
+    }
+
     pub(super) fn refresh_planet_temperatures(&mut self) -> Result<(), TimeError> {
         let mut updates = Vec::new();
         for planet in self.planets.values() {
@@ -107,6 +290,9 @@ impl ObjectRegistry {
             };
             if primary.current_mass.kilograms() == 0.0 || companion.current_mass.kilograms() == 0.0
             {
+                continue;
+            }
+            if is_compact(primary.stage) && is_compact(companion.stage) {
                 continue;
             }
             let separation_au =
@@ -270,6 +456,41 @@ impl ObjectRegistry {
                 interaction: Some(StellarInteractionKind::MassTransfer),
                 related_star_id: Some(accretor_id),
             });
+            if self.stars[&accretor_id].stage == StellarStage::WhiteDwarf
+                && accretor_mass.solar_masses() >= 1.44
+            {
+                self.return_gas(accretor_id, accretor_mass.solar_masses(), type_ia_yield())
+                    .map_err(|_| TimeError::Overflow)?;
+                self.apply_supernova_shock(accretor_id, elapsed, accretor_mass.solar_masses())
+                    .map_err(|_| TimeError::Overflow)?;
+                let accretor = self
+                    .stars
+                    .get_mut(&accretor_id)
+                    .expect("white dwarf exists");
+                accretor.current_mass =
+                    Mass::from_solar_masses(0.0).map_err(|_| TimeError::Overflow)?;
+                accretor.stage = StellarStage::Disrupted;
+                accretor.luminosity = crate::units::Luminosity::from_solar_luminosities(0.0)
+                    .map_err(|_| TimeError::Overflow)?;
+                accretor.temperature =
+                    Temperature::from_kelvin(0.0).map_err(|_| TimeError::Overflow)?;
+                let impacts = self.apply_stellar_impacts(
+                    accretor_id,
+                    accretor_mass,
+                    Mass::from_solar_masses(0.0).map_err(|_| TimeError::Overflow)?,
+                    StellarStage::Disrupted,
+                );
+                outcomes.push(StellarTransition {
+                    tick,
+                    star_id: accretor_id,
+                    from: StellarStage::WhiteDwarf,
+                    to: StellarStage::Disrupted,
+                    impacts,
+                    natal_kick_meters_per_second: 0,
+                    interaction: Some(StellarInteractionKind::TypeIaSupernova),
+                    related_star_id: Some(donor_id),
+                });
+            }
         }
         Ok(outcomes)
     }
@@ -512,6 +733,9 @@ impl ObjectRegistry {
         for asteroid in self.asteroids.values_mut() {
             let system = &self.star_systems[&asteroid.system_id];
             let star = &self.stars[&system.star_id];
+            if star.current_mass.kilograms() == 0.0 {
+                continue;
+            }
             let (position, velocity) = propagate_kepler(
                 asteroid.orbital_elements,
                 star.current_mass,
@@ -525,6 +749,9 @@ impl ObjectRegistry {
         for comet in self.comets.values_mut() {
             let system = &self.star_systems[&comet.system_id];
             let star = &self.stars[&system.star_id];
+            if star.current_mass.kilograms() == 0.0 {
+                continue;
+            }
             let (position, velocity) = propagate_kepler(
                 comet.orbital_elements,
                 star.current_mass,
@@ -840,6 +1067,18 @@ impl ObjectRegistry {
         }
         Ok(true)
     }
+}
+
+fn is_compact(stage: StellarStage) -> bool {
+    matches!(
+        stage,
+        StellarStage::WhiteDwarf | StellarStage::NeutronStar | StellarStage::BlackHole
+    )
+}
+
+fn type_ia_yield() -> crate::chemistry::GasComposition {
+    crate::chemistry::GasComposition::new(0.0, 0.0, 0.1, 0.4, 0.5, 0.0)
+        .expect("fixed Type Ia yield is normalized")
 }
 
 #[derive(Debug, Clone, Copy)]

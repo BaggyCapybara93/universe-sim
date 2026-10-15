@@ -17,6 +17,10 @@ pub enum AstroEventKind {
     BinaryMassTransfer,
     StellarMerger,
     PlanetaryCollision,
+    TypeIaSupernova,
+    Kilonova,
+    BlackHoleMerger,
+    CompactObjectMerger,
 }
 
 impl std::fmt::Display for AstroEventKind {
@@ -35,6 +39,10 @@ impl std::fmt::Display for AstroEventKind {
             Self::BinaryMassTransfer => formatter.write_str("binary mass transfer"),
             Self::StellarMerger => formatter.write_str("stellar merger"),
             Self::PlanetaryCollision => formatter.write_str("planetary collision"),
+            Self::TypeIaSupernova => formatter.write_str("type Ia supernova"),
+            Self::Kilonova => formatter.write_str("kilonova"),
+            Self::BlackHoleMerger => formatter.write_str("black-hole merger"),
+            Self::CompactObjectMerger => formatter.write_str("compact-object merger"),
         }
     }
 }
@@ -142,6 +150,10 @@ impl AstroEvent {
                 StellarInteractionKind::MassTransfer => AstroEventKind::BinaryMassTransfer,
                 StellarInteractionKind::StellarMerger => AstroEventKind::StellarMerger,
                 StellarInteractionKind::PlanetaryCollision => AstroEventKind::PlanetaryCollision,
+                StellarInteractionKind::TypeIaSupernova => AstroEventKind::TypeIaSupernova,
+                StellarInteractionKind::Kilonova => AstroEventKind::Kilonova,
+                StellarInteractionKind::BlackHoleMerger => AstroEventKind::BlackHoleMerger,
+                StellarInteractionKind::CompactObjectMerger => AstroEventKind::CompactObjectMerger,
             };
         }
         match self.to {
