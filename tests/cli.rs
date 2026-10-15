@@ -103,6 +103,15 @@ fn creates_advances_and_inspects_generated_objects() {
     assert!(text(&inspected.stdout).contains("Birth composition: H"));
     assert!(text(&inspected.stdout).contains("Source cluster: CL-"));
     assert!(text(&inspected.stdout).contains("Source cloud: GC-"));
+    let planet_record = contents
+        .lines()
+        .find(|line| line.starts_with("P|"))
+        .unwrap();
+    let planet_id = format!("P-{}", planet_record.split('|').nth(1).unwrap());
+    let inspected_planet = run(&["inspect", "--state", state_text, &planet_id]);
+    assert!(inspected_planet.status.success());
+    assert!(text(&inspected_planet.stdout).contains("Modeled habitable-zone residence:"));
+    assert!(text(&inspected_planet.stdout).contains("In modeled habitable zone:"));
     let cloud_record = contents
         .lines()
         .find(|line| line.starts_with("H|"))
@@ -252,6 +261,7 @@ fn stats_summarizes_all_materialized_regions_without_changing_state() {
     let output = text(&stats.stdout);
     assert!(output.contains("Regions: 2 materialized / 2 known"));
     assert!(output.contains("Star systems: 4"));
+    assert!(output.contains("Planets in modeled habitable zone:"));
     assert!(output.contains("Star formation events: 0"));
     assert!(output.contains("Stellar endpoint transitions: 0"));
     assert!(output.contains("Planetary impacts: 0"));
@@ -380,7 +390,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=18", "state_format_version=99");
+        .replace("state_format_version=19", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

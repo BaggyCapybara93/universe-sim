@@ -721,6 +721,7 @@ fn show_stats(args: StatsArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     let mut irradiated_planets = 0;
     let mut unbound_planets = 0;
     let mut destroyed_planets = 0;
+    let mut planets_in_habitable_zone = 0;
     for (key, _, materialized) in universe.galaxy_regions() {
         known_regions += 1;
         if !materialized {
@@ -739,6 +740,14 @@ fn show_stats(args: StatsArgs, diagnostics: &Diagnostics) -> Result<(), CliError
             }
         }
         for planet in objects.planets() {
+            if planet.is_in_habitable_zone()
+                && matches!(
+                    planet.status(),
+                    PlanetStatus::Stable | PlanetStatus::Irradiated
+                )
+            {
+                planets_in_habitable_zone += 1;
+            }
             match planet.status() {
                 PlanetStatus::Stable => stable_planets += 1,
                 PlanetStatus::Irradiated => irradiated_planets += 1,
@@ -809,6 +818,7 @@ fn show_stats(args: StatsArgs, diagnostics: &Diagnostics) -> Result<(), CliError
     println!("  Star systems: {}", counts.star_systems);
     println!("  Stars: {}", counts.stars);
     println!("  Planets: {}", counts.planets);
+    println!("  Planets in modeled habitable zone: {planets_in_habitable_zone}");
     println!("  Moons: {}", counts.moons);
     println!(
         "  Stellar remnants: {white_dwarfs} white dwarfs, {neutron_stars} neutron stars, {black_holes} black holes"
@@ -1029,6 +1039,35 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, universe: &Univ
                 "  Potentially habitable: {}",
                 planet.is_potentially_habitable()
             );
+            println!(
+                "  In modeled habitable zone: {}",
+                planet.is_in_habitable_zone()
+            );
+            if let Some(star) = objects.star(planet.star_id()) {
+                match planet.modeled_habitable_zone_history(star, universe.clock().elapsed()) {
+                    Ok(history) => {
+                        println!(
+                            "  Modeled habitable-zone residence: {}",
+                            format_cosmic_time(history.total_duration())
+                        );
+                        for window in history.windows() {
+                            if let Some(exit) = window.exited_at() {
+                                println!(
+                                    "    Entered at {}, exited at {}",
+                                    format_cosmic_time(window.entered_at()),
+                                    format_cosmic_time(exit)
+                                );
+                            } else {
+                                println!(
+                                    "    Entered at {}, ongoing",
+                                    format_cosmic_time(window.entered_at())
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => println!("  Modeled habitable-zone history: {error}"),
+                }
+            }
             println!("  Status: {}", planet.status());
             println!(
                 "  Orbital radius: {:.6} AU",
@@ -1157,6 +1196,19 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, universe: &Univ
             );
             println!("  Dissipates at: {}", disk.dissipates_at());
         }
+    }
+}
+
+fn format_cosmic_time(duration: SimDuration) -> String {
+    let years = duration.seconds() as f64 / universe_sim::time::SECONDS_PER_YEAR as f64;
+    if years >= 1_000_000_000.0 {
+        format!("{:.3} Gyr", years / 1_000_000_000.0)
+    } else if years >= 1_000_000.0 {
+        format!("{:.3} Myr", years / 1_000_000.0)
+    } else if years >= 1_000.0 {
+        format!("{:.3} kyr", years / 1_000.0)
+    } else {
+        format!("{years:.3} years")
     }
 }
 

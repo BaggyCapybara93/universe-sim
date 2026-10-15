@@ -133,9 +133,13 @@ impl ObjectRegistry {
         };
         let retained =
             Mass::from_solar_masses(total * retained_fraction).map_err(|_| TimeError::Overflow)?;
-        let (_, luminosity, temperature) =
-            super::stellar::stellar_properties(retained, composition.metallicity(), stage)
-                .map_err(|_| TimeError::Overflow)?;
+        let (_, luminosity, temperature) = super::stellar::stellar_properties(
+            retained,
+            composition.metallicity(),
+            stage,
+            SimDuration::ZERO,
+        )
+        .map_err(|_| TimeError::Overflow)?;
         let primary = self
             .stars
             .get_mut(&primary_id)
@@ -198,7 +202,7 @@ impl ObjectRegistry {
         })
     }
 
-    pub(super) fn refresh_planet_temperatures(&mut self) -> Result<(), TimeError> {
+    pub(crate) fn refresh_planet_temperatures(&mut self) -> Result<(), TimeError> {
         let mut updates = Vec::new();
         for planet in self.planets.values() {
             let Some(star) = self.stars.get(&planet.star_id) else {
@@ -210,13 +214,19 @@ impl ObjectRegistry {
                     planet.orbital_radius.astronomical_units(),
                 ))
                 .map_err(|_| TimeError::Overflow)?;
-            updates.push((planet.id, temperature));
+            let in_zone = super::planetary::is_in_habitable_zone(
+                star.luminosity,
+                planet.orbital_radius.astronomical_units(),
+            );
+            updates.push((planet.id, temperature, in_zone));
         }
-        for (planet_id, temperature) in updates {
-            self.planets
+        for (planet_id, temperature, in_zone) in updates {
+            let planet = self
+                .planets
                 .get_mut(&planet_id)
-                .expect("refreshed planet exists")
-                .equilibrium_temperature = temperature;
+                .expect("refreshed planet exists");
+            planet.equilibrium_temperature = temperature;
+            planet.in_habitable_zone = in_zone;
         }
         Ok(())
     }
@@ -363,6 +373,7 @@ impl ObjectRegistry {
                     merged_mass,
                     primary.metallicity,
                     StellarStage::MainSequence,
+                    SimDuration::ZERO,
                 )
                 .map_err(|_| TimeError::Overflow)?;
                 primary.luminosity = luminosity;

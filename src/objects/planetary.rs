@@ -6,15 +6,217 @@ use crate::id::{
 };
 use crate::orbital::{OrbitalElements, propagate_kepler};
 use crate::rng::{StableRng, derive_object_seed};
-use crate::time::SimDuration;
+use crate::time::{SECONDS_PER_YEAR, SimDuration};
 use crate::units::{
     Angle, Length, Luminosity, METERS_PER_ASTRONOMICAL_UNIT, Mass, Position, Temperature, Velocity,
 };
 
 use super::{
-    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, Moon, MoonFormationHistory, MoonOrigin,
-    ObjectError, Planet, PlanetAtmosphere, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk,
+    Asteroid, AsteroidBelt, Comet, CometCloud, DebrisDisk, HabitableZoneHistory,
+    HabitableZoneWindow, Moon, MoonFormationHistory, MoonOrigin, ObjectError, Planet,
+    PlanetAtmosphere, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star,
 };
+
+const HABITABLE_INNER_AU_AT_SOLAR_LUMINOSITY: f64 = 0.95;
+const HABITABLE_OUTER_AU_AT_SOLAR_LUMINOSITY: f64 = 1.37;
+
+pub(super) fn modeled_habitable_zone_history(
+    planet: &Planet,
+    star: &Star,
+    through: SimDuration,
+) -> Result<HabitableZoneHistory, ObjectError> {
+    if planet.star_id != star.id {
+        return Err(ObjectError("planet and star do not match".to_owned()));
+    }
+    if matches!(
+        planet.status,
+        PlanetStatus::Unbound | PlanetStatus::Destroyed
+    ) {
+        return Err(ObjectError(
+            "zone residence is unavailable for unbound or destroyed planets".to_owned(),
+        ));
+    }
+    let start = planet.formed_at.seconds().max(star.formed_at.seconds());
+    let end = through.seconds();
+    let mut history = HabitableZoneHistory {
+        windows: Vec::new(),
+        total_duration: SimDuration::ZERO,
+    };
+    if end < start {
+        return Ok(history);
+    }
+
+    let mut boundaries = vec![start, end];
+    for (age, _) in super::stellar::stellar_schedule(star.initial_mass, star.metallicity)
+        .map_err(|error| ObjectError(error.to_string()))?
+    {
+        if let Some(at) = star
+            .formed_at
+            .seconds()
+            .checked_add(age.seconds().saturating_sub(star.epoch_age.seconds()))
+            && (start..end).contains(&at)
+        {
+            boundaries.push(at);
+        }
+    }
+    for limit in [0.03, 10_000.0] {
+        if planet.migration_rate_au_per_year == 0.0 {
+            break;
+        }
+        let years = (limit - planet.initial_orbital_radius.astronomical_units())
+            / planet.migration_rate_au_per_year;
+        let seconds = years * SECONDS_PER_YEAR as f64;
+        if seconds.is_finite() && seconds >= 0.0 && seconds < u128::MAX as f64 {
+            let offset = seconds.round() as u128;
+            if let Some(at) = planet.formed_at.seconds().checked_add(offset)
+                && (start..end).contains(&at)
+            {
+                boundaries.push(at);
+            }
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    for pair in boundaries.windows(2) {
+        let (segment_start, segment_end) = (pair[0], pair[1]);
+        let midpoint = segment_start + (segment_end - segment_start) / 2;
+        let stage = modeled_stellar_stage(star, midpoint)?;
+        let luminosity_start = modeled_luminosity(star, stage, segment_start)?;
+        let luminosity_end = modeled_luminosity(star, stage, segment_end)?;
+        let orbit_start = modeled_orbit_au(planet, segment_start);
+        let orbit_end = modeled_orbit_au(planet, segment_end);
+        let mut cuts = vec![segment_start, segment_end];
+        add_habitable_crossings(
+            &mut cuts,
+            segment_start,
+            segment_end,
+            orbit_start,
+            orbit_end,
+            luminosity_start,
+            luminosity_end,
+        );
+        cuts.sort_unstable();
+        cuts.dedup();
+        for interval in cuts.windows(2) {
+            let at = interval[0] + (interval[1] - interval[0]) / 2;
+            let orbit = modeled_orbit_au(planet, at);
+            let luminosity = modeled_luminosity(star, stage, at)?;
+            if within_habitable_zone(luminosity, orbit) {
+                if let Some(last) = history.windows.last_mut()
+                    && last.exited_at == Some(SimDuration::from_seconds(interval[0]))
+                {
+                    last.exited_at = Some(SimDuration::from_seconds(interval[1]));
+                } else {
+                    history.windows.push(HabitableZoneWindow {
+                        entered_at: SimDuration::from_seconds(interval[0]),
+                        exited_at: Some(SimDuration::from_seconds(interval[1])),
+                    });
+                }
+                history.total_duration = history
+                    .total_duration
+                    .checked_add(SimDuration::from_seconds(interval[1] - interval[0]))
+                    .ok_or_else(|| ObjectError("habitable-zone duration overflow".to_owned()))?;
+            }
+        }
+    }
+    let at_end = modeled_stellar_stage(star, end)?;
+    let end_luminosity = modeled_luminosity(star, at_end, end)?;
+    let end_orbit = modeled_orbit_au(planet, end);
+    let currently_inside = within_habitable_zone(end_luminosity, end_orbit);
+    if currently_inside {
+        if let Some(last) = history.windows.last_mut()
+            && last.exited_at == Some(through)
+        {
+            last.exited_at = None;
+        } else if start == end {
+            history.windows.push(HabitableZoneWindow {
+                entered_at: through,
+                exited_at: None,
+            });
+        }
+    }
+    Ok(history)
+}
+
+fn modeled_stellar_stage(star: &Star, at: u128) -> Result<super::StellarStage, ObjectError> {
+    let age = star
+        .epoch_age
+        .checked_add(SimDuration::from_seconds(
+            at.saturating_sub(star.formed_at.seconds()),
+        ))
+        .ok_or_else(|| ObjectError("stellar age overflow".to_owned()))?;
+    super::stellar::stellar_stage_at(star.initial_mass, star.metallicity, age)
+}
+
+fn modeled_luminosity(
+    star: &Star,
+    stage: super::StellarStage,
+    at: u128,
+) -> Result<f64, ObjectError> {
+    let age = star
+        .epoch_age
+        .checked_add(SimDuration::from_seconds(
+            at.saturating_sub(star.formed_at.seconds()),
+        ))
+        .ok_or_else(|| ObjectError("stellar age overflow".to_owned()))?;
+    Ok(
+        super::stellar::stellar_properties(star.initial_mass, star.metallicity, stage, age)?
+            .1
+            .solar_luminosities(),
+    )
+}
+
+fn modeled_orbit_au(planet: &Planet, at: u128) -> f64 {
+    let years = at.saturating_sub(planet.formed_at.seconds()) as f64 / SECONDS_PER_YEAR as f64;
+    (planet.initial_orbital_radius.astronomical_units() + planet.migration_rate_au_per_year * years)
+        .clamp(0.03, 10_000.0)
+}
+
+fn add_habitable_crossings(
+    cuts: &mut Vec<u128>,
+    start: u128,
+    end: u128,
+    orbit_start: f64,
+    orbit_end: f64,
+    luminosity_start: f64,
+    luminosity_end: f64,
+) {
+    let delta_orbit = orbit_end - orbit_start;
+    let delta_luminosity = luminosity_end - luminosity_start;
+    for edge in [
+        HABITABLE_INNER_AU_AT_SOLAR_LUMINOSITY,
+        HABITABLE_OUTER_AU_AT_SOLAR_LUMINOSITY,
+    ] {
+        let a = delta_orbit * delta_orbit;
+        let b = 2.0 * orbit_start * delta_orbit - edge * edge * delta_luminosity;
+        let c = orbit_start * orbit_start - edge * edge * luminosity_start;
+        let roots = if a == 0.0 {
+            if b == 0.0 { vec![] } else { vec![-c / b] }
+        } else {
+            let discriminant = b.mul_add(b, -4.0 * a * c);
+            if discriminant < 0.0 {
+                vec![]
+            } else {
+                let square_root = discriminant.sqrt();
+                let q = -0.5 * (b + square_root.copysign(b));
+                if q == 0.0 {
+                    vec![-b / (2.0 * a)]
+                } else {
+                    vec![q / a, c / q]
+                }
+            }
+        };
+        for root in roots {
+            if root > 0.0 && root < 1.0 {
+                let offset = ((end - start) as f64 * root).round() as u128;
+                if offset < end - start {
+                    cuts.push(start + offset);
+                }
+            }
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn generate_planet(
@@ -421,8 +623,13 @@ pub(super) fn equilibrium_temperature_kelvin(luminosity: Luminosity, orbit_au: f
 }
 
 pub(super) fn is_in_habitable_zone(luminosity: Luminosity, orbit_au: f64) -> bool {
-    let root = luminosity.solar_luminosities().max(0.0).sqrt();
-    (0.95 * root..=1.37 * root).contains(&orbit_au)
+    within_habitable_zone(luminosity.solar_luminosities(), orbit_au)
+}
+
+fn within_habitable_zone(luminosity_solar: f64, orbit_au: f64) -> bool {
+    let root = luminosity_solar.max(0.0).sqrt();
+    (HABITABLE_INNER_AU_AT_SOLAR_LUMINOSITY * root..=HABITABLE_OUTER_AU_AT_SOLAR_LUMINOSITY * root)
+        .contains(&orbit_au)
 }
 
 fn planetary_composition(

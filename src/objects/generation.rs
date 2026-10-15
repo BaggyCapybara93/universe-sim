@@ -417,7 +417,7 @@ fn generate_star_with_mass(
     let initial_mass = Mass::from_solar_masses(mass_solar)?;
     let stage = super::stellar::stellar_stage_at(initial_mass, metallicity, epoch_age)?;
     let (current_mass, luminosity, temperature) =
-        super::stellar::stellar_properties(initial_mass, metallicity, stage)?;
+        super::stellar::stellar_properties(initial_mass, metallicity, stage, epoch_age)?;
     Ok(Star {
         id,
         system_id,
@@ -449,7 +449,7 @@ pub(super) fn generate_star_with_birth(
     let initial_mass = Mass::from_solar_masses(mass_solar)?;
     let stage = StellarStage::Protostar;
     let (current_mass, luminosity, temperature) =
-        super::stellar::stellar_properties(initial_mass, metallicity, stage)?;
+        super::stellar::stellar_properties(initial_mass, metallicity, stage, SimDuration::ZERO)?;
     Ok(Star {
         id,
         system_id,

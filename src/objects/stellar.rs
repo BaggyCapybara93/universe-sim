@@ -19,11 +19,8 @@ pub(super) fn stellar_schedule(
     metallicity: f64,
 ) -> Result<Vec<(SimDuration, StellarStage)>, TimeError> {
     let solar_masses = initial_mass.solar_masses();
-    let metallicity_factor = (metallicity / 0.014).clamp(0.05, 3.0).powf(0.12);
-    let main_sequence_years = (10_000_000_000.0 * solar_masses.powf(-2.5) * metallicity_factor)
-        .clamp(2_500_000.0, 200_000_000_000.0);
-    let pre_main_sequence_years =
-        (30_000_000.0 * solar_masses.powf(-2.5)).clamp(50_000.0, 2_000_000_000.0);
+    let (pre_main_sequence_years, main_sequence_years) =
+        main_sequence_timing(initial_mass, metallicity);
     let protostar_years = (pre_main_sequence_years * 0.15).clamp(10_000.0, 500_000.0);
     let main_sequence_end = pre_main_sequence_years + main_sequence_years;
     let mut schedule = vec![
@@ -178,6 +175,7 @@ pub(super) fn stellar_properties(
     initial_mass: Mass,
     metallicity: f64,
     stage: StellarStage,
+    age: SimDuration,
 ) -> Result<(Mass, Luminosity, Temperature), ObjectError> {
     let solar_masses = initial_mass.solar_masses();
     let retained = wind_retained_fraction(solar_masses, metallicity);
@@ -200,7 +198,8 @@ pub(super) fn stellar_properties(
         ),
         StellarStage::MainSequence => (
             solar_masses * (1.0 - 0.5 * (1.0 - retained)),
-            main_sequence_luminosity.max(0.0001),
+            (main_sequence_luminosity * main_sequence_brightening(initial_mass, metallicity, age))
+                .max(0.0001),
             (5_772.0 * solar_masses.powf(0.505)).min(60_000.0),
         ),
         StellarStage::Subgiant => (
@@ -265,6 +264,26 @@ pub(super) fn stellar_properties(
         Luminosity::from_solar_luminosities(luminosity_solar)?,
         Temperature::from_kelvin(temperature_kelvin)?,
     ))
+}
+
+fn main_sequence_brightening(initial_mass: Mass, metallicity: f64, age: SimDuration) -> f64 {
+    let (pre_main_sequence_years, main_sequence_years) =
+        main_sequence_timing(initial_mass, metallicity);
+    let age_years = age.seconds() as f64 / SECONDS_PER_YEAR as f64;
+    let fraction = ((age_years - pre_main_sequence_years) / main_sequence_years).clamp(0.0, 1.0);
+    // A simple population prescription: 70% of the reference luminosity at
+    // ignition, rising linearly to 130% at the end of the main sequence.
+    0.7 + 0.6 * fraction
+}
+
+fn main_sequence_timing(initial_mass: Mass, metallicity: f64) -> (f64, f64) {
+    let solar_masses = initial_mass.solar_masses();
+    let metallicity_factor = (metallicity / 0.014).clamp(0.05, 3.0).powf(0.12);
+    let main_sequence_years = (10_000_000_000.0 * solar_masses.powf(-2.5) * metallicity_factor)
+        .clamp(2_500_000.0, 200_000_000_000.0);
+    let pre_main_sequence_years =
+        (30_000_000.0 * solar_masses.powf(-2.5)).clamp(50_000.0, 2_000_000_000.0);
+    (pre_main_sequence_years, main_sequence_years)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -531,8 +550,14 @@ impl ObjectRegistry {
             let from = star.stage;
             let previous_mass = star.current_mass;
             star.stage = stage;
+            let event_age = star
+                .epoch_age
+                .checked_add(SimDuration::from_seconds(
+                    seconds.saturating_sub(star.formed_at.seconds()),
+                ))
+                .ok_or(TimeError::Overflow)?;
             let (prescribed_mass, luminosity, temperature) =
-                stellar_properties(star.initial_mass, star.metallicity, stage)
+                stellar_properties(star.initial_mass, star.metallicity, stage, event_age)
                     .map_err(|_| TimeError::Overflow)?;
             // Stage prescriptions must never recreate previously lost/transferred mass.
             let mass =
@@ -630,7 +655,20 @@ impl ObjectRegistry {
                 ))
                 .ok_or(TimeError::Overflow)?;
         }
+        self.refresh_main_sequence_luminosities()?;
         self.refresh_planet_temperatures()?;
         Ok(transitions)
+    }
+
+    pub(crate) fn refresh_main_sequence_luminosities(&mut self) -> Result<(), TimeError> {
+        for star in self.stars.values_mut() {
+            if star.stage == StellarStage::MainSequence {
+                let (_, luminosity, _) =
+                    stellar_properties(star.initial_mass, star.metallicity, star.stage, star.age)
+                        .map_err(|_| TimeError::Overflow)?;
+                star.luminosity = luminosity;
+            }
+        }
+        Ok(())
     }
 }

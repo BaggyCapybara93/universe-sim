@@ -288,12 +288,35 @@ It also introduces cluster member motion; older saved positions are updated to
 the new prescription when loaded. Older states start galaxy motion at their
 saved clock time.
 
+## Stellar brightening and habitable-zone windows
+
+Main-sequence stars now brighten gradually with age. The population prescription
+scales their reference main-sequence luminosity from 70% at ignition to 130% at
+the end of hydrogen burning; it is not a calibrated stellar-evolution track.
+Planet temperatures and current habitable-zone flags follow the updated
+luminosity. Inspect a planet to see when its modeled orbit enters and leaves the
+habitable zone and its total residence time through the current universal clock.
+
+The window calculation uses the existing 0.95–1.37 AU solar-equivalent zone
+heuristic and each planet's deterministic secular migration path. It starts when
+the planet first appears in the simulated state, or at the host's current stellar
+epoch after a merger. It is a zone-residence estimate, not a claim of surface
+habitability: scattering, binary interactions, and atmospheric evolution are
+not reconstructed in the historical windows. Unbound and destroyed planets
+have no reported zone history. Because windows
+are derived from absolute time, a large jump and smaller checkpoint batches
+produce the same window boundaries for the same modeled star and orbit.
+
+State format 19 versions the new luminosity rule. Older states load with their
+main-sequence luminosities and current planet temperatures refreshed to the new
+prescription; their previous detailed orbital histories cannot be recovered.
+
 ## Current boundaries
 
 - The configuration reader supports the settings demonstrated in
   `cosmos.toml`. It is deliberately not a complete TOML implementation.
 - State files carry explicit format, simulation, generation, and RNG versions.
-  The earlier clock-only version 1 and object versions 2 through 16 are migrated;
+  The earlier clock-only version 1 and object versions 2 through 18 are migrated;
   unknown versions are rejected rather than silently misinterpreted.
 - Galactic populations use disk, bulge, and halo spatial/velocity profiles,
   correlated age and metallicity, a broken-power-law stellar mass function,
@@ -401,7 +424,7 @@ same machine and toolchain.
 
 | Case | Seed | Systems | Ticks | Threads | Generation ms | Advancement ms | Fingerprint |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| small | 42 | 64 | 10,000 | 1 | 1.035 | 0.906 | `278bc6bc44c264b6` |
-| small | 42 | 64 | 10,000 | 4 | 0.678 | 0.731 | `278bc6bc44c264b6` |
-| large | 918273645 | 512 | 1,000,000 | 1 | 5.249 | 36.855 | `8d7598904e05ca3d` |
-| large | 918273645 | 512 | 1,000,000 | 4 | 2.714 | 29.564 | `8d7598904e05ca3d` |
+| small | 42 | 64 | 10,000 | 1 | 1.431 | 1.436 | `7bcc787c628e213e` |
+| small | 42 | 64 | 10,000 | 4 | 1.151 | 1.282 | `7bcc787c628e213e` |
+| large | 918273645 | 512 | 1,000,000 | 1 | 7.977 | 61.852 | `6d2da33b20b9bc81` |
+| large | 918273645 | 512 | 1,000,000 | 4 | 3.154 | 44.358 | `6d2da33b20b9bc81` |

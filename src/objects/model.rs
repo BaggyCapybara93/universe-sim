@@ -1126,7 +1126,51 @@ pub struct Planet {
     pub(super) status: PlanetStatus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HabitableZoneWindow {
+    pub(super) entered_at: SimDuration,
+    pub(super) exited_at: Option<SimDuration>,
+}
+
+impl HabitableZoneWindow {
+    pub const fn entered_at(self) -> SimDuration {
+        self.entered_at
+    }
+
+    pub const fn exited_at(self) -> Option<SimDuration> {
+        self.exited_at
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HabitableZoneHistory {
+    pub(super) windows: Vec<HabitableZoneWindow>,
+    pub(super) total_duration: SimDuration,
+}
+
+impl HabitableZoneHistory {
+    pub fn windows(&self) -> &[HabitableZoneWindow] {
+        &self.windows
+    }
+
+    pub const fn total_duration(&self) -> SimDuration {
+        self.total_duration
+    }
+}
+
 impl Planet {
+    /// Modeled zone residence along the secular migration path since this
+    /// universe began tracking the planet. Scattering, stellar interactions,
+    /// and atmospheric evolution are outside this reference-orbit estimate.
+    /// Unbound and destroyed planets have no reported residence history.
+    pub fn modeled_habitable_zone_history(
+        &self,
+        star: &Star,
+        through: SimDuration,
+    ) -> Result<HabitableZoneHistory, super::ObjectError> {
+        super::planetary::modeled_habitable_zone_history(self, star, through)
+    }
+
     pub const fn id(&self) -> PlanetId {
         self.id
     }

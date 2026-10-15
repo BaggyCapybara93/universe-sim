@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::GenerationConfig;
-use crate::id::{GalaxyId, StarId};
+use crate::id::{GalaxyId, PlanetId, StarId, StarSystemId};
 use crate::orbital::OrbitalElements;
 use crate::units::{Angle, Length, Mass, Position};
 
@@ -14,6 +14,113 @@ fn set_test_gas(objects: &mut ObjectRegistry, mass: f64, composition: crate::Gas
     cloud.composition = composition;
     objects.gas_reservoir_solar_masses = mass;
     objects.gas_composition = composition;
+}
+
+#[test]
+fn main_sequence_brightening_creates_checkpoint_independent_habitable_windows() {
+    let star_id = StarId::new(1);
+    let system_id = StarSystemId::new(2);
+    let composition = crate::GasComposition::from_metallicity(0.014).unwrap();
+    let mut star = generation::generate_star_with_birth(
+        star_id,
+        system_id,
+        SimDuration::ZERO,
+        composition,
+        1.0,
+    )
+    .unwrap();
+    let ignition_age = SimDuration::from_years(30_000_000).unwrap();
+    star.epoch_age = ignition_age;
+    star.age = ignition_age;
+    star.stage = StellarStage::MainSequence;
+    let (_, start_luminosity, _) = stellar::stellar_properties(
+        star.initial_mass,
+        star.metallicity,
+        star.stage,
+        ignition_age,
+    )
+    .unwrap();
+    let (_, later_luminosity, _) = stellar::stellar_properties(
+        star.initial_mass,
+        star.metallicity,
+        star.stage,
+        SimDuration::from_years(5_030_000_000).unwrap(),
+    )
+    .unwrap();
+    assert!(later_luminosity.solar_luminosities() > start_luminosity.solar_luminosities());
+    let five_gyr = SimDuration::from_years(5_000_000_000).unwrap();
+    let mut direct = ObjectRegistry::default();
+    direct.stars.insert(star_id, star.clone());
+    let mut checkpointed = direct.clone();
+    direct
+        .advance_stars_to(five_gyr, SimDuration::from_years(1_000_000).unwrap())
+        .unwrap();
+    checkpointed
+        .advance_stars_to(
+            SimDuration::from_years(2_000_000_000).unwrap(),
+            SimDuration::from_years(1_000_000).unwrap(),
+        )
+        .unwrap();
+    checkpointed
+        .advance_stars_to(five_gyr, SimDuration::from_years(1_000_000).unwrap())
+        .unwrap();
+    assert_eq!(direct, checkpointed);
+    assert!(
+        direct
+            .star(star_id)
+            .unwrap()
+            .luminosity()
+            .solar_luminosities()
+            > start_luminosity.solar_luminosities()
+    );
+
+    let mut planet = planetary::generate_planet(
+        42,
+        PlanetId::new(3),
+        system_id,
+        star_id,
+        Position::default(),
+        crate::units::Velocity::default(),
+        star.current_mass,
+        start_luminosity,
+        1.2,
+        composition,
+        SimDuration::ZERO,
+        GenerationConfig::DEFAULT,
+    )
+    .unwrap();
+    planet.migration_rate_au_per_year = 0.0;
+    let eleven_gyr = SimDuration::from_years(11_000_000_000).unwrap();
+    let early = planet
+        .modeled_habitable_zone_history(&star, five_gyr)
+        .unwrap();
+    let complete = planet
+        .modeled_habitable_zone_history(&star, eleven_gyr)
+        .unwrap();
+    assert_eq!(early.windows().len(), 1);
+    assert_eq!(early.windows()[0].exited_at(), None);
+    assert_eq!(complete.windows().len(), 1);
+    let entry = complete.windows()[0].entered_at();
+    assert!(entry > SimDuration::from_years(1_000_000_000).unwrap());
+    assert!(entry < SimDuration::from_years(1_300_000_000).unwrap());
+    assert_eq!(
+        complete.windows()[0].exited_at(),
+        Some(SimDuration::from_years(10_000_000_000).unwrap())
+    );
+    assert_eq!(
+        complete.total_duration().seconds(),
+        complete.windows()[0].exited_at().unwrap().seconds() - entry.seconds()
+    );
+
+    planet.migration_rate_au_per_year = -4.0e-11;
+    let migrating = planet
+        .modeled_habitable_zone_history(&star, eleven_gyr)
+        .unwrap();
+    assert_eq!(migrating.windows().len(), 1);
+    assert!(
+        migrating.windows()[0].exited_at().unwrap() < complete.windows()[0].exited_at().unwrap()
+    );
+    assert!(migrating.total_duration() < complete.total_duration());
 }
 
 #[test]
