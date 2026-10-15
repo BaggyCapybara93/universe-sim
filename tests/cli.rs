@@ -126,6 +126,9 @@ fn creates_advances_and_inspects_generated_objects() {
         text(&inspected_cluster.stderr)
     );
     assert!(text(&inspected_cluster.stdout).contains(&format!("STAR CLUSTER {cluster_id}")));
+    assert!(text(&inspected_cluster.stdout).contains("Phase: embedded"));
+    assert!(text(&inspected_cluster.stdout).contains("Characteristic radius: "));
+    assert!(text(&inspected_cluster.stdout).contains("Estimated bound systems: 1/1"));
 
     let materialized = run(&["materialize", "--state", state_text, "--region", "18,-4,91"]);
     assert!(
@@ -263,7 +266,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=17", "state_format_version=99");
+        .replace("state_format_version=18", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

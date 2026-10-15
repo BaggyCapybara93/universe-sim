@@ -584,6 +584,7 @@ impl ObjectRegistry {
     }
 
     pub(crate) fn advance_orbits_to(&mut self, elapsed: SimDuration) -> Result<(), ObjectError> {
+        self.evolve_cluster_positions_to(elapsed)?;
         self.evolve_planetary_systems(elapsed)?;
         let system_ids: Vec<_> = self.star_systems.keys().copied().collect();
         let mut integrated_systems = BTreeSet::new();
@@ -761,6 +762,31 @@ impl ObjectRegistry {
             )?;
             comet.position = position;
             comet.velocity = velocity;
+        }
+        Ok(())
+    }
+
+    fn evolve_cluster_positions_to(&mut self, elapsed: SimDuration) -> Result<(), ObjectError> {
+        let mut updates = Vec::with_capacity(self.star_systems.len());
+        for cluster in self.star_clusters.values() {
+            let [cx, cy, cz] = cluster.position.meters();
+            for &system_id in &cluster.system_ids {
+                let [dx, dy, dz] = cluster
+                    .member_offset_at(system_id, elapsed)
+                    .expect("cluster lists member system");
+                let position = Position::from_meters(cx + dx, cy + dy, cz + dz)?;
+                updates.push((system_id, position));
+            }
+        }
+        for (system_id, position) in updates {
+            let system = self
+                .star_systems
+                .get_mut(&system_id)
+                .expect("cluster member system exists");
+            system.position = position;
+            if let Some(star) = self.stars.get_mut(&system.star_id) {
+                star.position = position;
+            }
         }
         Ok(())
     }

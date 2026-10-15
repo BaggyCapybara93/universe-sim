@@ -7,7 +7,7 @@ use crate::id::{
 };
 use crate::orbital::OrbitalElements;
 use crate::rng::{StableRng, derive_object_seed};
-use crate::time::SimDuration;
+use crate::time::{SECONDS_PER_YEAR, SimDuration};
 use crate::units::{Length, Luminosity, METERS_PER_PARSEC, Mass, Position, Temperature, Velocity};
 
 use super::ObjectError;
@@ -291,6 +291,46 @@ pub struct StarCluster {
     pub(super) triggering_star_id: Option<StarId>,
 }
 
+/// A coarse structural state for a cluster at a universal simulation time.
+/// Membership in `StarCluster::system_ids` remains the permanent birth record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterPhase {
+    Embedded,
+    Bound,
+    Dispersing,
+    Dispersed,
+}
+
+impl fmt::Display for ClusterPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Embedded => "embedded",
+            Self::Bound => "bound",
+            Self::Dispersing => "dispersing",
+            Self::Dispersed => "dispersed",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClusterEvolution {
+    phase: ClusterPhase,
+    characteristic_radius_parsecs: f64,
+    bound_system_count: usize,
+}
+
+impl ClusterEvolution {
+    pub const fn phase(self) -> ClusterPhase {
+        self.phase
+    }
+    pub const fn characteristic_radius_parsecs(self) -> f64 {
+        self.characteristic_radius_parsecs
+    }
+    pub const fn bound_system_count(self) -> usize {
+        self.bound_system_count
+    }
+}
+
 impl StarCluster {
     pub const fn id(&self) -> StarClusterId {
         self.id
@@ -309,6 +349,84 @@ impl StarCluster {
     }
     pub const fn triggering_star_id(&self) -> Option<StarId> {
         self.triggering_star_id
+    }
+
+    /// Deterministic association expansion and evaporation prescription.
+    /// This is a population estimate, not an N-body orbit integration.
+    pub fn evolution_at(&self, elapsed: SimDuration) -> ClusterEvolution {
+        let age_myr = self.age_myr_at(elapsed);
+        let bound_system_count = self
+            .system_ids
+            .iter()
+            .enumerate()
+            .filter(|(rank, _)| age_myr < self.escape_age_myr(*rank))
+            .count();
+        let phase = if age_myr < 3.0 {
+            ClusterPhase::Embedded
+        } else if bound_system_count == 0 {
+            ClusterPhase::Dispersed
+        } else if bound_system_count == self.system_ids.len() {
+            ClusterPhase::Bound
+        } else {
+            ClusterPhase::Dispersing
+        };
+        ClusterEvolution {
+            phase,
+            characteristic_radius_parsecs: 0.1
+                + 0.1 * age_myr.min(3.0)
+                + 0.8 * (age_myr - 3.0).max(0.0),
+            bound_system_count,
+        }
+    }
+
+    fn age_myr_at(&self, elapsed: SimDuration) -> f64 {
+        elapsed.seconds().saturating_sub(self.formed_at.seconds()) as f64
+            / (1_000_000 * SECONDS_PER_YEAR) as f64
+    }
+
+    fn escape_age_myr(&self, rank: usize) -> f64 {
+        3.0 + 50.0 * (self.system_ids.len() as f64 / (rank as f64 + 0.5)).ln()
+    }
+
+    /// Deterministic birth offset used by newly formed multi-system clusters.
+    pub(super) fn member_birth_offset_meters(&self, system_id: StarSystemId) -> [f64; 3] {
+        if self.formed_at == SimDuration::ZERO {
+            return [0.0; 3];
+        }
+        let mut rng = StableRng::new(derive_object_seed(
+            self.id.value(),
+            system_id.value(),
+            "cluster-member-motion-v1",
+        ));
+        let radius = 0.1 * rng.next_f64().sqrt() * METERS_PER_PARSEC;
+        let angle = std::f64::consts::TAU * rng.next_f64();
+        [radius * angle.cos(), radius * angle.sin(), 0.0]
+    }
+
+    /// Offset from the cluster birth center, including post-escape drift.
+    pub(super) fn member_offset_at(
+        &self,
+        system_id: StarSystemId,
+        elapsed: SimDuration,
+    ) -> Option<[f64; 3]> {
+        let rank = self.system_ids.iter().position(|id| *id == system_id)?;
+        let age_myr = self.age_myr_at(elapsed);
+        let escape_age = self.escape_age_myr(rank);
+        let birth = self.member_birth_offset_meters(system_id);
+        let mut rng = StableRng::new(derive_object_seed(
+            self.id.value(),
+            system_id.value(),
+            "cluster-member-motion-v1",
+        ));
+        let _ = rng.next_f64();
+        let angle = std::f64::consts::TAU * rng.next_f64();
+        let travel_parsecs = 0.1 * age_myr.min(escape_age) + 0.8 * (age_myr - escape_age).max(0.0);
+        let travel_meters = travel_parsecs * METERS_PER_PARSEC;
+        Some([
+            birth[0] + travel_meters * angle.cos(),
+            birth[1] + travel_meters * angle.sin(),
+            birth[2],
+        ])
     }
 }
 

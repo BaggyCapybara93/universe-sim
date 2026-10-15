@@ -482,7 +482,7 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
         let object = objects
             .find(id)
             .ok_or_else(|| CliError::message(format!("object {id} was not found")))?;
-        print_object(object, objects);
+        print_object(object, objects, universe.clock().elapsed());
         if let Some(dynamics) = dynamics {
             println!("  Dynamics: {dynamics}");
         }
@@ -683,7 +683,7 @@ fn print_system_ancestry(objects: &ObjectRegistry, system_id: universe_sim::Star
     }
 }
 
-fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry) {
+fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, elapsed: SimDuration) {
     match object {
         ObjectRef::Galaxy(galaxy) => {
             let [x, y, z] = galaxy.position().meters();
@@ -710,9 +710,20 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry) {
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
         }
         ObjectRef::StarCluster(cluster) => {
+            let evolution = cluster.evolution_at(elapsed);
             println!("STAR CLUSTER {}", cluster.id());
             println!("  Source cloud: {}", cluster.cloud_id());
             println!("  Formed at: {}", cluster.formed_at());
+            println!("  Phase: {}", evolution.phase());
+            println!(
+                "  Characteristic radius: {:.3} pc",
+                evolution.characteristic_radius_parsecs()
+            );
+            println!(
+                "  Estimated bound systems: {}/{}",
+                evolution.bound_system_count(),
+                cluster.system_ids().len()
+            );
             if let Some(source) = cluster.triggering_star_id() {
                 println!("  Triggered by supernova: {source}");
             }

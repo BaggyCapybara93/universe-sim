@@ -27,9 +27,9 @@ use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
 use crate::units::{Position, Velocity};
 
-pub const STATE_FORMAT_VERSION: u32 = 17;
-pub const SIMULATION_VERSION: u32 = 6;
-pub const GENERATION_VERSION: u32 = 13;
+pub const STATE_FORMAT_VERSION: u32 = 18;
+pub const SIMULATION_VERSION: u32 = 7;
+pub const GENERATION_VERSION: u32 = 14;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -640,8 +640,10 @@ impl Universe {
         require_version(
             &fields,
             "simulation_version",
-            if state_format_version >= 17 {
+            if state_format_version >= 18 {
                 SIMULATION_VERSION
+            } else if state_format_version >= 17 {
+                6
             } else if state_format_version >= 16 {
                 5
             } else if state_format_version >= 15 {
@@ -657,8 +659,10 @@ impl Universe {
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 17 {
+            if state_format_version >= 18 {
                 GENERATION_VERSION
+            } else if state_format_version >= 17 {
+                13
             } else if state_format_version >= 15 {
                 12
             } else if state_format_version >= 14 {
@@ -816,8 +820,13 @@ impl Universe {
         } else {
             object_lines.to_vec()
         };
-        let objects =
+        let mut objects =
             ObjectRegistry::decode(legacy_object_lines.into_iter()).map_err(StateError::Objects)?;
+        if state_format_version < 18 && elapsed != SimDuration::ZERO {
+            objects
+                .advance_orbits_to(elapsed)
+                .map_err(StateError::Objects)?;
+        }
         if !objects
             .galaxies()
             .all(|galaxy| galaxy.id() == primary_galaxy_id)
@@ -1656,9 +1665,9 @@ mod tests {
     fn version_fifteen_state_loads_under_compact_binary_rules() {
         let universe = Universe::new(test_config()).unwrap();
         let legacy = legacy_state_without_galaxy_sections(&universe)
-            .replace("state_format_version=17", "state_format_version=15")
-            .replace("simulation_version=6", "simulation_version=4")
-            .replace("generation_version=13", "generation_version=12");
+            .replace("state_format_version=18", "state_format_version=15")
+            .replace("simulation_version=7", "simulation_version=4")
+            .replace("generation_version=14", "generation_version=12");
         assert_eq!(Universe::decode(&legacy).unwrap(), universe);
     }
 
@@ -1669,9 +1678,9 @@ mod tests {
         let mut universe = Universe::new(config).unwrap();
         universe.advance_ticks(10_000).unwrap();
         let legacy = legacy_state_without_galaxy_sections(&universe)
-            .replace("state_format_version=17", "state_format_version=16")
-            .replace("simulation_version=6", "simulation_version=5")
-            .replace("generation_version=13", "generation_version=12");
+            .replace("state_format_version=18", "state_format_version=16")
+            .replace("simulation_version=7", "simulation_version=5")
+            .replace("generation_version=14", "generation_version=12");
         let restored = Universe::decode(&legacy).unwrap();
         let original =
             GalaxyCatalogEntry::generate(config.seed, 1, config.generation.galaxy_radius_parsecs)
@@ -1681,6 +1690,48 @@ mod tests {
             original.position()
         );
         assert!(restored.galaxy_encounters().is_empty());
+    }
+
+    #[test]
+    fn version_seventeen_state_gains_cluster_member_motion() {
+        let mut universe = Universe::new(test_config()).unwrap();
+        universe.advance_ticks(10_000).unwrap();
+        let system = universe.objects().star_systems().next().unwrap();
+        let cluster = universe
+            .objects()
+            .star_cluster(system.cluster_id().unwrap())
+            .unwrap();
+        let expected = system.position();
+        let [cx, cy, cz] = cluster.position().meters();
+        let system_prefix = format!("Y|{}|", system.id().value());
+        let legacy = universe
+            .encode()
+            .lines()
+            .map(|line| {
+                if line.starts_with(&system_prefix) {
+                    let mut fields: Vec<_> = line.split('|').map(str::to_owned).collect();
+                    for (field, coordinate) in [cx, cy, cz].into_iter().enumerate() {
+                        fields[field + 3] = format!("{:016x}", coordinate.to_bits());
+                    }
+                    fields.join("|")
+                } else {
+                    line.replace("state_format_version=18", "state_format_version=17")
+                        .replace("simulation_version=7", "simulation_version=6")
+                        .replace("generation_version=14", "generation_version=13")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let restored = Universe::decode(&legacy).unwrap();
+        assert_eq!(
+            restored
+                .objects()
+                .star_system(system.id())
+                .unwrap()
+                .position(),
+            expected
+        );
+        assert!(restored.encode().contains("state_format_version=18"));
     }
 
     #[test]
@@ -2017,9 +2068,9 @@ mod tests {
                 } else if line.starts_with("Y|") {
                     line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=17", "state_format_version=12")
-                        .replace("simulation_version=6", "simulation_version=1")
-                        .replace("generation_version=13", "generation_version=9")
+                    line.replace("state_format_version=18", "state_format_version=12")
+                        .replace("simulation_version=7", "simulation_version=1")
+                        .replace("generation_version=14", "generation_version=9")
                 }
             })
             .collect::<Vec<_>>()
@@ -2055,9 +2106,9 @@ mod tests {
                 if line.starts_with("Y|") {
                     line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=17", "state_format_version=13")
-                        .replace("simulation_version=6", "simulation_version=2")
-                        .replace("generation_version=13", "generation_version=10")
+                    line.replace("state_format_version=18", "state_format_version=13")
+                        .replace("simulation_version=7", "simulation_version=2")
+                        .replace("generation_version=14", "generation_version=10")
                 }
             })
             .collect::<Vec<_>>()
@@ -2086,9 +2137,9 @@ mod tests {
                 } else if line.starts_with("L|") {
                     line.split('|').take(8).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=17", "state_format_version=14")
-                        .replace("simulation_version=6", "simulation_version=3")
-                        .replace("generation_version=13", "generation_version=11")
+                    line.replace("state_format_version=18", "state_format_version=14")
+                        .replace("simulation_version=7", "simulation_version=3")
+                        .replace("generation_version=14", "generation_version=11")
                 }
             })
             .collect::<Vec<_>>()
@@ -2325,9 +2376,9 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=17", "state_format_version=2")
-                        .replace("generation_version=13", "generation_version=1")
-                        .replace("simulation_version=6", "simulation_version=1"),
+                    line.replace("state_format_version=18", "state_format_version=2")
+                        .replace("generation_version=14", "generation_version=1")
+                        .replace("simulation_version=7", "simulation_version=1"),
                 );
             }
         }
@@ -2360,17 +2411,17 @@ mod tests {
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=17", "state_format_version=6")
-                        .replace("generation_version=13", "generation_version=3")
-                        .replace("simulation_version=6", "simulation_version=1")
+                    line.replace("state_format_version=18", "state_format_version=6")
+                        .replace("generation_version=14", "generation_version=3")
+                        .replace("simulation_version=7", "simulation_version=1")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=17"));
-        assert!(upgraded.contains("generation_version=13"));
+        assert!(upgraded.contains("state_format_version=18"));
+        assert!(upgraded.contains("generation_version=14"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

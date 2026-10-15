@@ -29,6 +29,53 @@ fn generation_is_deterministic_and_relationships_are_valid() {
 }
 
 #[test]
+fn clusters_expand_and_disperse_without_losing_birth_ancestry() {
+    let objects = ObjectRegistry::generate(42, GenerationConfig::DEFAULT).unwrap();
+    let cluster = objects.star_clusters().next().unwrap();
+    let system_ids = cluster.system_ids().to_vec();
+    let newborn = cluster.evolution_at(SimDuration::ZERO);
+    let mature = cluster.evolution_at(SimDuration::from_years(20_000_000).unwrap());
+    let old = cluster.evolution_at(SimDuration::from_years(500_000_000).unwrap());
+    let mut association = cluster.clone();
+    association.system_ids = objects.star_systems().map(StarSystem::id).collect();
+
+    assert_eq!(newborn.phase(), ClusterPhase::Embedded);
+    assert_eq!(newborn.bound_system_count(), system_ids.len());
+    assert!(newborn.characteristic_radius_parsecs() < mature.characteristic_radius_parsecs());
+    assert!(mature.characteristic_radius_parsecs() < old.characteristic_radius_parsecs());
+    assert_eq!(old.phase(), ClusterPhase::Dispersed);
+    assert_eq!(old.bound_system_count(), 0);
+    assert_eq!(
+        association
+            .evolution_at(SimDuration::from_years(3_000_000).unwrap())
+            .phase(),
+        ClusterPhase::Bound
+    );
+    assert_eq!(
+        association
+            .evolution_at(SimDuration::from_years(20_000_000).unwrap())
+            .phase(),
+        ClusterPhase::Dispersing
+    );
+    assert_eq!(cluster.system_ids(), system_ids);
+    assert_eq!(
+        objects.star_system(system_ids[0]).unwrap().cluster_id(),
+        Some(cluster.id())
+    );
+
+    let mut state = String::new();
+    objects.encode(&mut state);
+    let restored = ObjectRegistry::decode(state.lines().skip(1)).unwrap();
+    assert_eq!(
+        restored
+            .star_cluster(cluster.id())
+            .unwrap()
+            .evolution_at(SimDuration::from_years(500_000_000).unwrap()),
+        old
+    );
+}
+
+#[test]
 fn generation_adds_moons_and_aggregate_small_body_populations() {
     let mut config = GenerationConfig::DEFAULT;
     config.star_systems = 128;
@@ -244,6 +291,72 @@ fn gas_reservoir_forms_a_persisted_protostar_system() {
         ObjectRegistry::decode(encoded.lines().skip(1)).unwrap(),
         objects
     );
+}
+
+#[test]
+fn cluster_members_spread_after_birth_and_match_checkpointed_positions() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 1;
+    config.star_mass_solar_min = 0.1;
+    config.star_mass_solar_max = 0.2;
+    let mut birth = ObjectRegistry::generate(42, config).unwrap();
+    let formed = SimDuration::from_years(10_000_000).unwrap();
+    let events = birth
+        .form_stars_between(
+            42,
+            config,
+            SimDuration::ZERO,
+            formed,
+            SimDuration::from_years(1_000).unwrap(),
+        )
+        .unwrap();
+    let system_id = birth.star(events[0].star_id).unwrap().system_id();
+    let cluster_id = birth.star_system(system_id).unwrap().cluster_id().unwrap();
+    let cluster = birth.star_cluster(cluster_id).unwrap().clone();
+    assert!(cluster.system_ids().len() > 1);
+    let center = cluster.position().meters();
+    let birth_position = birth.star_system(system_id).unwrap().position().meters();
+
+    let later = SimDuration::from_years(30_000_000).unwrap();
+    let mut whole = birth.clone();
+    whole.advance_orbits_to(later).unwrap();
+    let evolved = whole.star_system(system_id).unwrap().position().meters();
+    let distance = |point: [f64; 3]| {
+        point
+            .into_iter()
+            .zip(center)
+            .map(|(coordinate, origin)| (coordinate - origin).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    };
+    assert!(distance(evolved) > distance(birth_position));
+    assert_eq!(
+        whole.star(events[0].star_id).unwrap().position().meters(),
+        evolved
+    );
+    assert!(
+        whole
+            .star_cluster(cluster_id)
+            .unwrap()
+            .evolution_at(later)
+            .bound_system_count()
+            < cluster.system_ids().len()
+    );
+
+    let mut resumed = birth;
+    resumed
+        .advance_orbits_to(SimDuration::from_years(20_000_000).unwrap())
+        .unwrap();
+    let mut state = String::new();
+    resumed.encode(&mut state);
+    let mut resumed = ObjectRegistry::decode(state.lines().skip(1)).unwrap();
+    resumed.advance_orbits_to(later).unwrap();
+    for system_id in cluster.system_ids() {
+        assert_eq!(
+            resumed.star_system(*system_id).unwrap().position(),
+            whole.star_system(*system_id).unwrap().position()
+        );
+    }
 }
 
 #[test]

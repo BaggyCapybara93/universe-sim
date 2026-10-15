@@ -583,13 +583,8 @@ impl ObjectRegistry {
                         "dynamic star-formation ID collision".to_owned(),
                     ));
                 }
-                let offset = 0.1 * METERS_PER_PARSEC * rng.next_f64().sqrt();
-                let direction = std::f64::consts::TAU * rng.next_f64();
-                let position = Position::from_meters(
-                    cx + offset * direction.cos(),
-                    cy + offset * direction.sin(),
-                    cz,
-                )?;
+                let [dx, dy, dz] = cluster.member_birth_offset_meters(system_id);
+                let position = Position::from_meters(cx + dx, cy + dy, cz + dz)?;
                 let mut star = generation::generate_star_with_birth(
                     star_id,
                     system_id,

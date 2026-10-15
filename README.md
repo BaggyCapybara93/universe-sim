@@ -244,8 +244,10 @@ stored coordinates of individual systems remain in their original local
 galaxy frames. The straight-line encounter thresholds and starburst factors are
 population prescriptions, not a gravitational N-body model.
 
-State format 17 stores galaxy motion, merger status, and encounter history.
-Older states load with galaxy motion beginning at their saved clock time.
+State format 18 stores galaxy motion, merger status, and encounter history.
+It also introduces cluster member motion; older saved positions are updated to
+the new prescription when loaded. Older states start galaxy motion at their
+saved clock time.
 
 ## Current boundaries
 
@@ -291,6 +293,14 @@ Older states load with galaxy motion beginning at their saved clock time.
   replenish and enrich the source cloud. Existing generated systems receive
   individual historical clusters so their ancestry remains inspectable.
   Follow a planet's system to its cluster and source cloud with `inspect`.
+  `inspect` also reports a cluster's modeled phase, characteristic radius,
+  and estimated number of bound systems at the current simulation time. The
+  association stays embedded for its first 3 Myr, then expands and gradually
+  loses bound members on a 50 Myr evaporation timescale. Member systems move
+  outward from the birth center and drift faster after escaping. Their planets
+  and companions follow the updated system center during orbital propagation;
+  birth-cluster ancestry remains inspectable. This is a deterministic
+  population prescription rather than an N-body cluster simulation.
   Core-collapse and pair-instability supernova ejecta can compress the source
   cloud and nearby clouds. A pending shock increases the next collapse's gas
   budget and sibling-system limit; the resulting cluster records its triggering
