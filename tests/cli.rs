@@ -219,6 +219,41 @@ fn creates_and_materializes_a_secondary_galaxy() {
 }
 
 #[test]
+fn lists_persisted_galaxy_encounters_and_mergers() {
+    let directory = TestDirectory::new();
+    let state = directory.path().join("encounters.state");
+    let state_text = state.to_str().unwrap();
+    let created = run(&[
+        "new",
+        "--seed",
+        "42",
+        "--galaxies",
+        "8",
+        "--star-systems",
+        "1",
+        "--tick-length",
+        "1 Myr",
+        "--output",
+        state_text,
+    ]);
+    assert!(created.status.success(), "{}", text(&created.stderr));
+
+    let advanced = run(&["simulate", "--state", state_text, "--ticks", "10000"]);
+    assert!(advanced.status.success(), "{}", text(&advanced.stderr));
+    assert!(text(&advanced.stdout).contains("merger"));
+
+    let encounters = run(&["encounters", "--state", state_text]);
+    assert!(encounters.status.success(), "{}", text(&encounters.stderr));
+    let listed = text(&encounters.stdout);
+    assert!(listed.contains("close passage"));
+    assert!(listed.contains("merger"));
+
+    let galaxies = run(&["galaxies", "--state", state_text]);
+    assert!(galaxies.status.success(), "{}", text(&galaxies.stderr));
+    assert!(text(&galaxies.stdout).contains("merged into"));
+}
+
+#[test]
 fn rejects_corrupted_or_incompatible_state_through_the_cli() {
     let directory = TestDirectory::new();
     let state = directory.path().join("universe.state");
@@ -228,7 +263,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=16", "state_format_version=99");
+        .replace("state_format_version=17", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

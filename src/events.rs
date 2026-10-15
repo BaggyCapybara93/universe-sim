@@ -1,6 +1,91 @@
-use crate::id::StarId;
+use crate::id::{GalaxyId, StarId};
 use crate::objects::{PlanetImpact, StellarInteractionKind, StellarStage};
 use crate::region::RegionCoord;
+use crate::time::SimDuration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GalaxyEncounterKind {
+    ClosePass,
+    Merger,
+}
+
+impl GalaxyEncounterKind {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::ClosePass => "close_pass",
+            Self::Merger => "merger",
+        }
+    }
+
+    pub(crate) fn parse_code(value: &str) -> Option<Self> {
+        match value {
+            "close_pass" => Some(Self::ClosePass),
+            "merger" => Some(Self::Merger),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for GalaxyEncounterKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ClosePass => "close passage",
+            Self::Merger => "merger",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GalaxyEncounter {
+    id: u64,
+    occurred_at: SimDuration,
+    tick: u64,
+    first: GalaxyId,
+    second: GalaxyId,
+    kind: GalaxyEncounterKind,
+}
+
+impl GalaxyEncounter {
+    pub(crate) const fn new(
+        id: u64,
+        occurred_at: SimDuration,
+        tick: u64,
+        first: GalaxyId,
+        second: GalaxyId,
+        kind: GalaxyEncounterKind,
+    ) -> Self {
+        Self {
+            id,
+            occurred_at,
+            tick,
+            first,
+            second,
+            kind,
+        }
+    }
+
+    pub const fn id(self) -> u64 {
+        self.id
+    }
+    pub const fn occurred_at(self) -> SimDuration {
+        self.occurred_at
+    }
+    pub const fn tick(self) -> u64 {
+        self.tick
+    }
+    pub const fn first(self) -> GalaxyId {
+        self.first
+    }
+    pub const fn second(self) -> GalaxyId {
+        self.second
+    }
+    pub const fn kind(self) -> GalaxyEncounterKind {
+        self.kind
+    }
+    pub fn involves(self, galaxy: GalaxyId) -> bool {
+        self.first == galaxy || self.second == galaxy
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AstroEventKind {

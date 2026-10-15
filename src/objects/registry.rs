@@ -9,7 +9,7 @@ use crate::id::{
     PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId,
 };
 use crate::rng::{StableRng, derive_object_seed};
-use crate::time::SimDuration;
+use crate::time::{SECONDS_PER_YEAR, SimDuration};
 use crate::units::{METERS_PER_PARSEC, Mass, Position, Velocity};
 
 use super::{
@@ -407,6 +407,7 @@ impl ObjectRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn form_stars_between(
         &mut self,
         seed: u64,
@@ -414,6 +415,18 @@ impl ObjectRegistry {
         from: SimDuration,
         to: SimDuration,
         tick_duration: SimDuration,
+    ) -> Result<Vec<StellarTransition>, ObjectError> {
+        self.form_stars_between_with_encounters(seed, config, from, to, tick_duration, &[])
+    }
+
+    pub(crate) fn form_stars_between_with_encounters(
+        &mut self,
+        seed: u64,
+        config: GenerationConfig,
+        from: SimDuration,
+        to: SimDuration,
+        tick_duration: SimDuration,
+        encounters: &[crate::events::GalaxyEncounter],
     ) -> Result<Vec<StellarTransition>, ObjectError> {
         const FORMATION_INTERVAL_YEARS: u128 = 10_000_000;
         const STAR_FORMATION_EFFICIENCY: f64 = 0.30;
@@ -447,6 +460,20 @@ impl ObjectRegistry {
                 self.advance_stars_to(formation_time, tick_duration)
                     .map_err(|error| ObjectError(error.to_string()))?,
             );
+            let tidal_strength = encounters
+                .iter()
+                .filter(|encounter| {
+                    encounter.involves(galaxy_id)
+                        && encounter.occurred_at() <= formation_time
+                        && formation_time.seconds() - encounter.occurred_at().seconds()
+                            <= 200_000_000 * SECONDS_PER_YEAR
+                })
+                .map(|encounter| match encounter.kind() {
+                    crate::events::GalaxyEncounterKind::ClosePass => 0.5_f64,
+                    crate::events::GalaxyEncounterKind::Merger => 1.0_f64,
+                })
+                .fold(0.0_f64, f64::max);
+            let tidal_multiplier = 1.0 + tidal_strength;
             let source = self
                 .gas_clouds
                 .values()
@@ -454,6 +481,7 @@ impl ObjectRegistry {
                 .max_by(|a, b| {
                     let budget = |cloud: &GasCloud| {
                         cloud.mass_solar
+                            * tidal_multiplier
                             * (STAR_FORMATION_EFFICIENCY
                                 + cloud
                                     .pending_shock
@@ -466,6 +494,7 @@ impl ObjectRegistry {
                 .cloned();
             let available_stellar_mass = source.as_ref().map_or(0.0, |cloud| {
                 cloud.mass_solar
+                    * tidal_multiplier
                     * (STAR_FORMATION_EFFICIENCY
                         + cloud
                             .pending_shock
@@ -519,7 +548,11 @@ impl ObjectRegistry {
                 triggering_star_id: source.pending_shock.map(|shock| shock.source_star_id),
             };
             let mut remaining_budget = available_stellar_mass;
-            let member_limit = if source.pending_shock.is_some() { 8 } else { 4 };
+            let member_limit = if source.pending_shock.is_some() || tidal_strength > 0.0 {
+                8
+            } else {
+                4
+            };
             for member in 0..member_limit {
                 let remaining_cloud = self.gas_clouds[&source.id].mass_solar;
                 let maximum_mass = config

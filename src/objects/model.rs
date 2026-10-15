@@ -38,12 +38,35 @@ impl fmt::Display for GalaxyMorphology {
     }
 }
 
+impl GalaxyMorphology {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Spiral => "spiral",
+            Self::Elliptical => "elliptical",
+            Self::Irregular => "irregular",
+            Self::Dwarf => "dwarf",
+        }
+    }
+
+    pub(crate) fn parse_code(value: &str) -> Result<Self, ObjectError> {
+        match value {
+            "spiral" => Ok(Self::Spiral),
+            "elliptical" => Ok(Self::Elliptical),
+            "irregular" => Ok(Self::Irregular),
+            "dwarf" => Ok(Self::Dwarf),
+            _ => Err(ObjectError(format!("unknown galaxy morphology '{value}'"))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GalaxyCatalogEntry {
     pub(super) id: GalaxyId,
     pub(super) position: Position,
+    pub(super) velocity: Velocity,
     pub(super) morphology: GalaxyMorphology,
     pub(super) radius_parsecs: f64,
+    pub(super) merged_into: Option<GalaxyId>,
 }
 
 impl GalaxyCatalogEntry {
@@ -55,6 +78,10 @@ impl GalaxyCatalogEntry {
         self.position
     }
 
+    pub const fn velocity(self) -> Velocity {
+        self.velocity
+    }
+
     pub const fn morphology(self) -> GalaxyMorphology {
         self.morphology
     }
@@ -63,12 +90,34 @@ impl GalaxyCatalogEntry {
         self.radius_parsecs
     }
 
+    pub const fn merged_into(self) -> Option<GalaxyId> {
+        self.merged_into
+    }
+
+    pub(crate) fn with_dynamics(
+        mut self,
+        position: Position,
+        velocity: Velocity,
+        morphology: GalaxyMorphology,
+        radius_parsecs: f64,
+        merged_into: Option<GalaxyId>,
+    ) -> Self {
+        self.position = position;
+        self.velocity = velocity;
+        self.morphology = morphology;
+        self.radius_parsecs = radius_parsecs;
+        self.merged_into = merged_into;
+        self
+    }
+
     pub(crate) fn primary(seed: u64, radius_parsecs: f64) -> Self {
         Self {
             id: GalaxyId::new(derive_object_seed(seed, 0, "galaxy-id-v1")),
             position: Position::default(),
+            velocity: Velocity::default(),
             morphology: GalaxyMorphology::Spiral,
             radius_parsecs,
+            merged_into: None,
         }
     }
 
@@ -100,6 +149,24 @@ impl GalaxyCatalogEntry {
         };
         let distance = super::random_range(&mut rng, 500_000.0, 10_000_000.0) * METERS_PER_PARSEC;
         let direction = super::random_unit_vector(&mut rng);
+        let tangent_seed = super::random_unit_vector(&mut rng);
+        let projection: f64 = direction.iter().zip(tangent_seed).map(|(a, b)| a * b).sum();
+        let mut tangent = [0.0; 3];
+        for axis in 0..3 {
+            tangent[axis] = tangent_seed[axis] - projection * direction[axis];
+        }
+        let norm = tangent
+            .iter()
+            .map(|component| component * component)
+            .sum::<f64>()
+            .sqrt();
+        if norm > 0.0 {
+            for component in &mut tangent {
+                *component /= norm;
+            }
+        }
+        let radial_speed = super::random_range(&mut rng, 150_000.0, 350_000.0);
+        let transverse_speed = super::random_range(&mut rng, 0.0, 1_500.0);
         Ok(Self {
             id,
             position: Position::from_meters(
@@ -107,8 +174,14 @@ impl GalaxyCatalogEntry {
                 distance * direction[1],
                 distance * direction[2],
             )?,
+            velocity: Velocity::from_meters_per_second(
+                -radial_speed * direction[0] + transverse_speed * tangent[0],
+                -radial_speed * direction[1] + transverse_speed * tangent[1],
+                -radial_speed * direction[2] + transverse_speed * tangent[2],
+            )?,
             morphology,
             radius_parsecs: base_radius_parsecs * radius_factor,
+            merged_into: None,
         })
     }
 }

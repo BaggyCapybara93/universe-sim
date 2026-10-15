@@ -356,12 +356,44 @@ fn galaxy_morphology_sets_the_initial_gas_metallicity() {
         let galaxy = GalaxyCatalogEntry {
             id: GalaxyId::new(index as u64 + 1),
             position: Position::default(),
+            velocity: crate::units::Velocity::default(),
             morphology,
             radius_parsecs: config.galaxy_radius_parsecs,
+            merged_into: None,
         };
         let objects = ObjectRegistry::generate_in_galaxy(index as u64, config, galaxy).unwrap();
         assert!((objects.gas_composition().metallicity() - metallicity).abs() < 1.0e-12);
     }
+}
+
+#[test]
+fn galaxy_close_passage_boosts_star_formation_from_existing_gas() {
+    let mut config = GenerationConfig::DEFAULT;
+    config.star_systems = 1;
+    config.star_mass_solar_min = 1.0;
+    config.star_mass_solar_max = 10.0;
+    let mut baseline = ObjectRegistry::generate(42, config).unwrap();
+    set_test_gas(&mut baseline, 10.0, crate::GasComposition::default());
+    let mut tidal = baseline.clone();
+    let galaxy_id = tidal.galaxies().next().unwrap().id();
+    let encounter = crate::GalaxyEncounter::new(
+        1,
+        SimDuration::ZERO,
+        0,
+        galaxy_id,
+        GalaxyId::new(999),
+        crate::GalaxyEncounterKind::ClosePass,
+    );
+    let end = SimDuration::from_years(10_000_000).unwrap();
+    let tick = SimDuration::from_years(1).unwrap();
+    baseline
+        .form_stars_between(42, config, SimDuration::ZERO, end, tick)
+        .unwrap();
+    tidal
+        .form_stars_between_with_encounters(42, config, SimDuration::ZERO, end, tick, &[encounter])
+        .unwrap();
+    assert!(tidal.gas_reservoir_solar_masses() < baseline.gas_reservoir_solar_masses());
+    tidal.validate().unwrap();
 }
 
 #[test]

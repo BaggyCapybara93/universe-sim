@@ -51,6 +51,8 @@ enum CliCommand {
     Galaxies(GalaxiesArgs),
     /// List recorded stellar lifecycle events.
     Events(EventsArgs),
+    /// List recorded galaxy close passages and mergers.
+    Encounters(EncountersArgs),
 }
 
 #[derive(Debug, Args)]
@@ -203,6 +205,16 @@ struct EventsArgs {
     limit: usize,
 }
 
+#[derive(Debug, Args)]
+struct EncountersArgs {
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+
+    /// Maximum number of most-recent encounters to display.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Some(threads) = cli.threads
@@ -234,6 +246,7 @@ fn run(command: CliCommand, diagnostics: &Diagnostics) -> Result<(), CliError> {
         CliCommand::Regions(args) => list_regions(args, diagnostics),
         CliCommand::Galaxies(args) => list_galaxies(args, diagnostics),
         CliCommand::Events(args) => list_events(args, diagnostics),
+        CliCommand::Encounters(args) => list_encounters(args, diagnostics),
     }
 }
 
@@ -320,9 +333,11 @@ fn simulate(args: SimulateArgs, diagnostics: &Diagnostics) -> Result<(), CliErro
             io::stdout().flush().map_err(CliError::from)?;
         }
         loop {
+            let first_new_encounter = universe.galaxy_encounters().len();
             let new_events = universe
                 .advance_ticks_with_events_bounded(batch_size, args.galaxies_at_once)?
                 .to_vec();
+            let new_encounters = universe.galaxy_encounters()[first_new_encounter..].to_vec();
             diagnostics.emit("simulation_advanced", &universe, None);
             universe.save(&output)?;
             diagnostics.emit("checkpoint_saved", &universe, Some(&output));
@@ -337,6 +352,9 @@ fn simulate(args: SimulateArgs, diagnostics: &Diagnostics) -> Result<(), CliErro
             for event in &new_events {
                 print_event(event, "  ", diagnostics.enabled);
             }
+            for encounter in &new_encounters {
+                print_encounter(*encounter, "  ");
+            }
             io::stdout().flush().map_err(CliError::from)?;
             if !pace.is_zero() {
                 thread::sleep(pace);
@@ -348,6 +366,7 @@ fn simulate(args: SimulateArgs, diagnostics: &Diagnostics) -> Result<(), CliErro
         .ticks
         .expect("clap requires --ticks when --continuous is absent");
     let starting_tick = universe.clock().tick();
+    let starting_encounter = universe.galaxy_encounters().len();
     let batch_size = args
         .checkpoint_every
         .map(NonZeroU64::get)
@@ -379,6 +398,9 @@ fn simulate(args: SimulateArgs, diagnostics: &Diagnostics) -> Result<(), CliErro
             if diagnostics.enabled { "    " } else { "" },
             diagnostics.enabled,
         );
+    }
+    for encounter in &universe.galaxy_encounters()[starting_encounter..] {
+        print_encounter(*encounter, if diagnostics.enabled { "    " } else { "" });
     }
     if diagnostics.enabled {
         println!("  State: {}", output.display());
@@ -474,6 +496,7 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
     println!("  Tick length: {}", universe.clock().tick_duration());
     println!("  Elapsed time: {}", universe.clock().elapsed());
     println!("  Galaxies: {}", universe.galaxies().count());
+    println!("  Active galaxies: {}", universe.active_galaxy_count());
     println!("  Gas clouds: {}", counts.gas_clouds);
     println!("  Star clusters: {}", counts.star_clusters);
     println!("  Star systems: {}", counts.star_systems);
@@ -492,6 +515,10 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
     );
     print_gas_composition(universe.objects().gas_composition());
     println!("  Recorded events: {}", universe.events().len());
+    println!(
+        "  Galaxy encounters: {}",
+        universe.galaxy_encounters().len()
+    );
     println!("  Known regions: {}", universe.galaxy_regions().count());
     Ok(())
 }
@@ -589,14 +616,21 @@ fn list_galaxies(args: GalaxiesArgs, diagnostics: &Diagnostics) -> Result<(), Cl
     println!("GALAXIES");
     for galaxy in universe.galaxies() {
         let [x, y, z] = galaxy.position().meters();
+        let [vx, vy, vz] = galaxy.velocity().meters_per_second();
         println!(
-            "  {}: {}, radius {:.0} pc, position [{:.3e}, {:.3e}, {:.3e}] m",
+            "  {}: {}, radius {:.0} pc, position [{:.3e}, {:.3e}, {:.3e}] m, velocity [{:.0}, {:.0}, {:.0}] m/s{}",
             galaxy.id(),
             galaxy.morphology(),
             galaxy.radius_parsecs(),
             x,
             y,
-            z
+            z,
+            vx,
+            vy,
+            vz,
+            galaxy
+                .merged_into()
+                .map_or_else(String::new, |id| format!(", merged into {id}")),
         );
     }
     Ok(())
@@ -611,6 +645,30 @@ fn list_events(args: EventsArgs, diagnostics: &Diagnostics) -> Result<(), CliErr
         print_event(event, "  ", true);
     }
     Ok(())
+}
+
+fn list_encounters(args: EncountersArgs, diagnostics: &Diagnostics) -> Result<(), CliError> {
+    let universe = Universe::load(&args.state)?;
+    diagnostics.emit("state_loaded", &universe, Some(&args.state));
+    println!("GALAXY ENCOUNTERS ({})", universe.galaxy_encounters().len());
+    let skip = universe
+        .galaxy_encounters()
+        .len()
+        .saturating_sub(args.limit);
+    for encounter in universe.galaxy_encounters().iter().skip(skip) {
+        print_encounter(*encounter, "  ");
+    }
+    Ok(())
+}
+
+fn print_encounter(encounter: universe_sim::GalaxyEncounter, indentation: &str) {
+    println!(
+        "{indentation}Tick {}: {} and {} — {}",
+        encounter.tick(),
+        encounter.first(),
+        encounter.second(),
+        encounter.kind()
+    );
 }
 
 fn print_system_ancestry(objects: &ObjectRegistry, system_id: universe_sim::StarSystemId) {

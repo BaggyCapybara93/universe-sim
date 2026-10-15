@@ -12,7 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rayon::prelude::*;
 
 use crate::config::{ConfigValidationError, GenerationConfig, SimulationConfig};
-use crate::events::{AstroEvent, AstroEventDetails, AstroEventLocation};
+use crate::events::{
+    AstroEvent, AstroEventDetails, AstroEventLocation, GalaxyEncounter, GalaxyEncounterKind,
+};
+use crate::galaxy::{GalaxyMotion, advance_encounters, encounter_id};
 use crate::id::{GalaxyId, UniverseId};
 use crate::matter::MatterInventory;
 use crate::objects::{
@@ -22,10 +25,11 @@ use crate::objects::{
 use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
 use crate::time::{SimDuration, SimulationClock, TickDuration, TimeError};
+use crate::units::{Position, Velocity};
 
-pub const STATE_FORMAT_VERSION: u32 = 16;
-pub const SIMULATION_VERSION: u32 = 5;
-pub const GENERATION_VERSION: u32 = 12;
+pub const STATE_FORMAT_VERSION: u32 = 17;
+pub const SIMULATION_VERSION: u32 = 6;
+pub const GENERATION_VERSION: u32 = 13;
 pub const RNG_VERSION: u32 = 1;
 pub const MAX_CONCURRENT_GALAXIES: usize = 4;
 
@@ -38,6 +42,8 @@ pub struct Universe {
     config: SimulationConfig,
     clock: SimulationClock,
     galaxies: Vec<GalaxyCatalogEntry>,
+    galaxy_motion: BTreeMap<GalaxyId, GalaxyMotion>,
+    galaxy_encounters: Vec<GalaxyEncounter>,
     objects: ObjectRegistry,
     known_regions: BTreeMap<GalaxyRegion, u64>,
     regions: BTreeMap<GalaxyRegion, MaterializedRegion>,
@@ -61,6 +67,15 @@ impl Universe {
             .collect::<Result<_, _>>()
             .map_err(UniverseCreateError::Objects)?;
         let primary_galaxy = galaxies[0];
+        let galaxy_motion = galaxies
+            .iter()
+            .map(|galaxy| {
+                (
+                    galaxy.id(),
+                    GalaxyMotion::from_catalog(*galaxy, SimDuration::ZERO),
+                )
+            })
+            .collect();
         let objects =
             ObjectRegistry::generate_in_galaxy(config.seed, config.generation, primary_galaxy)
                 .map_err(UniverseCreateError::Objects)?;
@@ -70,6 +85,8 @@ impl Universe {
             config,
             clock: SimulationClock::new(config.tick_duration),
             galaxies,
+            galaxy_motion,
+            galaxy_encounters: Vec::new(),
             objects,
             known_regions: BTreeMap::from([(origin, 0)]),
             regions: BTreeMap::new(),
@@ -109,7 +126,33 @@ impl Universe {
     }
 
     pub fn galaxies(&self) -> impl Iterator<Item = GalaxyCatalogEntry> + '_ {
-        self.galaxies.iter().copied()
+        self.galaxies.iter().map(|galaxy| {
+            self.galaxy_motion[&galaxy.id()]
+                .snapshot(*galaxy, self.clock.elapsed())
+                .expect("galaxy position was validated during advancement")
+        })
+    }
+
+    pub fn galaxy_encounters(&self) -> &[GalaxyEncounter] {
+        &self.galaxy_encounters
+    }
+
+    pub fn active_galaxy_count(&self) -> usize {
+        self.galaxy_motion
+            .values()
+            .filter(|motion| motion.merged_into.is_none())
+            .count()
+    }
+
+    pub fn surviving_galaxy_id(&self, galaxy_id: GalaxyId) -> Option<GalaxyId> {
+        let mut current = galaxy_id;
+        for _ in 0..self.galaxies.len() {
+            match self.galaxy_motion.get(&current)?.merged_into {
+                Some(next) => current = next,
+                None => return Some(current),
+            }
+        }
+        None
     }
 
     pub fn primary_galaxy_id(&self) -> GalaxyId {
@@ -164,13 +207,22 @@ impl Universe {
         galaxy_id: GalaxyId,
         coordinate: RegionCoord,
     ) -> Result<bool, RegionError> {
+        let key = GalaxyRegion::new(galaxy_id, coordinate);
+        if let Some(survivor) = self.surviving_galaxy_id(galaxy_id)
+            && survivor != galaxy_id
+            && !self.known_regions.contains_key(&key)
+        {
+            return Err(RegionError::MergedGalaxy {
+                galaxy_id,
+                survivor,
+            });
+        }
         let galaxy = self
             .galaxies
             .iter()
             .find(|galaxy| galaxy.id() == galaxy_id)
             .copied()
             .ok_or(RegionError::UnknownGalaxy(galaxy_id))?;
-        let key = GalaxyRegion::new(galaxy_id, coordinate);
         if (galaxy_id == self.primary_galaxy_id() && coordinate == RegionCoord::ORIGIN)
             || self.regions.contains_key(&key)
         {
@@ -181,12 +233,13 @@ impl Universe {
             ObjectRegistry::generate_in_galaxy(region_seed, self.config.generation, galaxy)
                 .map_err(RegionError::Generation)?;
         let mut transitions = objects
-            .form_stars_between(
+            .form_stars_between_with_encounters(
                 region_seed,
                 self.config.generation,
                 SimDuration::ZERO,
                 self.clock.elapsed(),
                 self.clock.tick_duration().duration(),
+                &self.galaxy_encounters,
             )
             .map_err(RegionError::Generation)?;
         transitions.extend(
@@ -273,14 +326,27 @@ impl Universe {
         next_clock
             .advance_by(ticks)
             .map_err(SimulationAdvanceError::Time)?;
+        let universe_seed = self.seed();
+        let primary_galaxy_id = self.primary_galaxy_id();
+        advance_encounters(
+            &mut self.galaxy_motion,
+            &mut self.galaxy_encounters,
+            universe_seed,
+            primary_galaxy_id,
+            self.clock.elapsed(),
+            next_clock.elapsed(),
+            next_clock.tick_duration().duration(),
+        )
+        .map_err(SimulationAdvanceError::Time)?;
         let mut origin_transitions = self
             .objects
-            .form_stars_between(
+            .form_stars_between_with_encounters(
                 self.seed(),
                 self.config.generation,
                 self.clock.elapsed(),
                 next_clock.elapsed(),
                 next_clock.tick_duration().duration(),
+                &self.galaxy_encounters,
             )
             .map_err(SimulationAdvanceError::Objects)?;
         origin_transitions.extend(
@@ -301,16 +367,18 @@ impl Universe {
         let generation = self.config.generation;
         let universe_seed = self.config.seed;
         let current_elapsed = self.clock.elapsed();
+        let galaxy_encounters = &self.galaxy_encounters;
         let update_region = |(key, region): (&GalaxyRegion, &mut MaterializedRegion)| {
             let region_seed = scoped_region_seed(universe_seed, key.galaxy_id(), key.coordinate());
             let mut transitions = region
                 .objects_mut()
-                .form_stars_between(
+                .form_stars_between_with_encounters(
                     region_seed,
                     generation,
                     current_elapsed,
                     next_clock.elapsed(),
                     next_clock.tick_duration().duration(),
+                    galaxy_encounters,
                 )
                 .map_err(SimulationAdvanceError::Objects)?;
             transitions.extend(
@@ -489,6 +557,43 @@ impl Universe {
             )
             .expect("writing to a String cannot fail");
         }
+        output.push_str("[galaxy_motion]\n");
+        for (id, motion) in &self.galaxy_motion {
+            let [px, py, pz] = motion.position_at_epoch.meters();
+            let [vx, vy, vz] = motion.velocity.meters_per_second();
+            writeln!(
+                output,
+                "D|{}|{:016x}|{:016x}|{:016x}|{:016x}|{:016x}|{:016x}|{}|{}|{:016x}|{}",
+                id.value(),
+                px.to_bits(),
+                py.to_bits(),
+                pz.to_bits(),
+                vx.to_bits(),
+                vy.to_bits(),
+                vz.to_bits(),
+                motion.epoch.seconds(),
+                motion.morphology.code(),
+                motion.radius_parsecs.to_bits(),
+                motion
+                    .merged_into
+                    .map_or_else(|| "-".to_owned(), |id| id.value().to_string()),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        output.push_str("[galaxy_encounters]\n");
+        for encounter in &self.galaxy_encounters {
+            writeln!(
+                output,
+                "C|{}|{}|{}|{}|{}|{}",
+                encounter.id(),
+                encounter.occurred_at().seconds(),
+                encounter.tick(),
+                encounter.first().value(),
+                encounter.second().value(),
+                encounter.kind().code(),
+            )
+            .expect("writing to a String cannot fail");
+        }
         output
     }
 
@@ -535,8 +640,10 @@ impl Universe {
         require_version(
             &fields,
             "simulation_version",
-            if state_format_version >= 16 {
+            if state_format_version >= 17 {
                 SIMULATION_VERSION
+            } else if state_format_version >= 16 {
+                5
             } else if state_format_version >= 15 {
                 4
             } else if state_format_version >= 14 {
@@ -550,8 +657,10 @@ impl Universe {
         require_version(
             &fields,
             "generation_version",
-            if state_format_version >= 15 {
+            if state_format_version >= 17 {
                 GENERATION_VERSION
+            } else if state_format_version >= 15 {
+                12
             } else if state_format_version >= 14 {
                 11
             } else if state_format_version >= 13 {
@@ -629,27 +738,71 @@ impl Universe {
         let primary_galaxy_id = galaxies[0].id();
 
         let remaining: Vec<_> = lines.collect();
-        let (object_lines, region_lines, event_lines) = if state_format_version == 2 {
-            (remaining.as_slice(), &[][..], &[][..])
+        let (object_lines, region_lines, event_lines, motion_lines, encounter_lines) =
+            if state_format_version == 2 {
+                (remaining.as_slice(), &[][..], &[][..], &[][..], &[][..])
+            } else {
+                let regions_index = remaining
+                    .iter()
+                    .position(|line| *line == "[regions]")
+                    .ok_or_else(|| StateError::Invalid("state is missing [regions]".to_owned()))?;
+                let events_index = remaining
+                    .iter()
+                    .position(|line| *line == "[events]")
+                    .ok_or_else(|| StateError::Invalid("state is missing [events]".to_owned()))?;
+                if events_index <= regions_index {
+                    return Err(StateError::Invalid(
+                        "state sections are out of order".to_owned(),
+                    ));
+                }
+                if state_format_version >= 17 {
+                    let motion_index = remaining
+                        .iter()
+                        .position(|line| *line == "[galaxy_motion]")
+                        .ok_or_else(|| {
+                            StateError::Invalid("state is missing [galaxy_motion]".to_owned())
+                        })?;
+                    let encounter_index = remaining
+                        .iter()
+                        .position(|line| *line == "[galaxy_encounters]")
+                        .ok_or_else(|| {
+                            StateError::Invalid("state is missing [galaxy_encounters]".to_owned())
+                        })?;
+                    if motion_index <= events_index || encounter_index <= motion_index {
+                        return Err(StateError::Invalid(
+                            "state sections are out of order".to_owned(),
+                        ));
+                    }
+                    (
+                        &remaining[..regions_index],
+                        &remaining[regions_index + 1..events_index],
+                        &remaining[events_index + 1..motion_index],
+                        &remaining[motion_index + 1..encounter_index],
+                        &remaining[encounter_index + 1..],
+                    )
+                } else {
+                    (
+                        &remaining[..regions_index],
+                        &remaining[regions_index + 1..events_index],
+                        &remaining[events_index + 1..],
+                        &[][..],
+                        &[][..],
+                    )
+                }
+            };
+
+        let galaxy_motion = if state_format_version >= 17 {
+            decode_galaxy_motion(motion_lines, &galaxies, elapsed)?
         } else {
-            let regions_index = remaining
+            galaxies
                 .iter()
-                .position(|line| *line == "[regions]")
-                .ok_or_else(|| StateError::Invalid("state is missing [regions]".to_owned()))?;
-            let events_index = remaining
-                .iter()
-                .position(|line| *line == "[events]")
-                .ok_or_else(|| StateError::Invalid("state is missing [events]".to_owned()))?;
-            if events_index <= regions_index {
-                return Err(StateError::Invalid(
-                    "state sections are out of order".to_owned(),
-                ));
-            }
-            (
-                &remaining[..regions_index],
-                &remaining[regions_index + 1..events_index],
-                &remaining[events_index + 1..],
-            )
+                .map(|galaxy| (galaxy.id(), GalaxyMotion::from_catalog(*galaxy, elapsed)))
+                .collect()
+        };
+        let galaxy_encounters = if state_format_version >= 17 {
+            decode_galaxy_encounters(encounter_lines, &galaxies, seed, tick, tick_duration)?
+        } else {
+            Vec::new()
         };
 
         let legacy_object_lines: Vec<_> = if state_format_version < 12 {
@@ -760,12 +913,13 @@ impl Universe {
                 ObjectRegistry::generate_in_galaxy(region_seed, generation, galaxy)
                     .map_err(StateError::Objects)?;
             region_objects
-                .form_stars_between(
+                .form_stars_between_with_encounters(
                     region_seed,
                     generation,
                     SimDuration::ZERO,
                     elapsed,
                     tick_duration.duration(),
+                    &galaxy_encounters,
                 )
                 .map_err(StateError::Objects)?;
             region_objects
@@ -902,6 +1056,8 @@ impl Universe {
             config,
             clock,
             galaxies,
+            galaxy_motion,
+            galaxy_encounters,
             objects,
             known_regions,
             regions,
@@ -957,11 +1113,179 @@ impl Universe {
             .advance_orbits_to(elapsed)
             .map_err(StateError::Objects)?;
         universe.clock = clock;
+        for (galaxy, motion) in &mut universe.galaxy_motion {
+            *motion = GalaxyMotion::from_catalog(
+                *universe
+                    .galaxies
+                    .iter()
+                    .find(|entry| entry.id() == *galaxy)
+                    .expect("legacy galaxy exists"),
+                elapsed,
+            );
+        }
         let origin = GalaxyRegion::new(universe.primary_galaxy_id(), RegionCoord::ORIGIN);
         universe.known_regions.insert(origin, tick);
         universe.record_transitions(origin, transitions);
         Ok(universe)
     }
+}
+
+fn parse_float_bits(value: &str, label: &str) -> Result<f64, StateError> {
+    let bits = u64::from_str_radix(value, 16)
+        .map_err(|_| StateError::Invalid(format!("{label} has invalid float bits")))?;
+    let number = f64::from_bits(bits);
+    if !number.is_finite() {
+        return Err(StateError::Invalid(format!("{label} must be finite")));
+    }
+    Ok(number)
+}
+
+fn decode_galaxy_motion(
+    lines: &[&str],
+    catalog: &[GalaxyCatalogEntry],
+    elapsed: SimDuration,
+) -> Result<BTreeMap<GalaxyId, GalaxyMotion>, StateError> {
+    let known: BTreeSet<_> = catalog.iter().map(|galaxy| galaxy.id()).collect();
+    let mut motions = BTreeMap::new();
+    for line in lines {
+        let fields: Vec<_> = line.split('|').collect();
+        if fields.len() != 12 || fields[0] != "D" {
+            return Err(StateError::Invalid(format!(
+                "malformed galaxy motion record '{line}'"
+            )));
+        }
+        let id = GalaxyId::new(parse_number(fields[1], "galaxy motion ID")?);
+        if !known.contains(&id) || motions.contains_key(&id) {
+            return Err(StateError::Invalid(
+                "galaxy motion ID is unknown or duplicated".to_owned(),
+            ));
+        }
+        let position_at_epoch = Position::from_meters(
+            parse_float_bits(fields[2], "galaxy x")?,
+            parse_float_bits(fields[3], "galaxy y")?,
+            parse_float_bits(fields[4], "galaxy z")?,
+        )
+        .map_err(|error| StateError::Invalid(error.to_string()))?;
+        let velocity = Velocity::from_meters_per_second(
+            parse_float_bits(fields[5], "galaxy vx")?,
+            parse_float_bits(fields[6], "galaxy vy")?,
+            parse_float_bits(fields[7], "galaxy vz")?,
+        )
+        .map_err(|error| StateError::Invalid(error.to_string()))?;
+        let epoch = SimDuration::from_seconds(parse_number(fields[8], "galaxy epoch")?);
+        if epoch > elapsed {
+            return Err(StateError::Invalid(
+                "galaxy motion epoch exceeds the clock".to_owned(),
+            ));
+        }
+        let morphology =
+            crate::objects::GalaxyMorphology::parse_code(fields[9]).map_err(StateError::Objects)?;
+        let radius_parsecs = parse_float_bits(fields[10], "galaxy radius")?;
+        if radius_parsecs <= 0.0 {
+            return Err(StateError::Invalid(
+                "galaxy radius must be positive".to_owned(),
+            ));
+        }
+        let merged_into = if fields[11] == "-" {
+            None
+        } else {
+            let survivor = GalaxyId::new(parse_number(fields[11], "merged galaxy ID")?);
+            if survivor == id || !known.contains(&survivor) {
+                return Err(StateError::Invalid(
+                    "galaxy merger target is invalid".to_owned(),
+                ));
+            }
+            Some(survivor)
+        };
+        let motion = GalaxyMotion {
+            position_at_epoch,
+            velocity,
+            epoch,
+            morphology,
+            radius_parsecs,
+            merged_into,
+        };
+        motion.position_at(elapsed).map_err(StateError::Time)?;
+        motions.insert(id, motion);
+    }
+    if motions.len() != catalog.len() {
+        return Err(StateError::Invalid(
+            "galaxy motion catalog is incomplete".to_owned(),
+        ));
+    }
+    for id in &known {
+        let mut current = *id;
+        for _ in 0..catalog.len() {
+            let Some(next) = motions[&current].merged_into else {
+                break;
+            };
+            current = next;
+        }
+        if motions[&current].merged_into.is_some() {
+            return Err(StateError::Invalid(
+                "galaxy merger targets form a cycle".to_owned(),
+            ));
+        }
+    }
+    Ok(motions)
+}
+
+fn decode_galaxy_encounters(
+    lines: &[&str],
+    catalog: &[GalaxyCatalogEntry],
+    seed: u64,
+    tick: u64,
+    tick_duration: TickDuration,
+) -> Result<Vec<GalaxyEncounter>, StateError> {
+    let known: BTreeSet<_> = catalog.iter().map(|galaxy| galaxy.id()).collect();
+    let mut events = Vec::new();
+    let mut ids = BTreeSet::new();
+    let mut pairs = BTreeSet::new();
+    for line in lines {
+        let fields: Vec<_> = line.split('|').collect();
+        if fields.len() != 7 || fields[0] != "C" {
+            return Err(StateError::Invalid(format!(
+                "malformed galaxy encounter record '{line}'"
+            )));
+        }
+        let id: u64 = parse_number(fields[1], "galaxy encounter ID")?;
+        let seconds: u128 = parse_number(fields[2], "galaxy encounter time")?;
+        let event_tick: u64 = parse_number(fields[3], "galaxy encounter tick")?;
+        let first = GalaxyId::new(parse_number(fields[4], "first galaxy ID")?);
+        let second = GalaxyId::new(parse_number(fields[5], "second galaxy ID")?);
+        let kind = GalaxyEncounterKind::parse_code(fields[6])
+            .ok_or_else(|| StateError::Invalid("unknown galaxy encounter kind".to_owned()))?;
+        let expected_tick = u64::try_from(
+            seconds
+                .checked_add(tick_duration.duration().seconds() - 1)
+                .ok_or(StateError::Time(TimeError::Overflow))?
+                / tick_duration.duration().seconds(),
+        )
+        .map_err(|_| StateError::Time(TimeError::Overflow))?;
+        if first >= second
+            || !known.contains(&first)
+            || !known.contains(&second)
+            || event_tick != expected_tick
+            || event_tick > tick
+            || id != encounter_id(seed, first, second, kind, seconds)
+            || !ids.insert(id)
+            || !pairs.insert((first, second, kind))
+        {
+            return Err(StateError::Invalid(
+                "galaxy encounter is invalid or duplicated".to_owned(),
+            ));
+        }
+        events.push(GalaxyEncounter::new(
+            id,
+            SimDuration::from_seconds(seconds),
+            event_tick,
+            first,
+            second,
+            kind,
+        ));
+    }
+    events.sort_by_key(|event| (event.occurred_at(), event.id()));
+    Ok(events)
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), StateError> {
@@ -1213,6 +1537,10 @@ impl Error for SimulationAdvanceError {
 pub enum RegionError {
     CannotUnloadOrigin,
     UnknownGalaxy(GalaxyId),
+    MergedGalaxy {
+        galaxy_id: GalaxyId,
+        survivor: GalaxyId,
+    },
     Generation(ObjectError),
     Time(TimeError),
 }
@@ -1222,6 +1550,13 @@ impl fmt::Display for RegionError {
         match self {
             Self::CannotUnloadOrigin => formatter.write_str("the origin region cannot be unloaded"),
             Self::UnknownGalaxy(id) => write!(formatter, "unknown galaxy {id}"),
+            Self::MergedGalaxy {
+                galaxy_id,
+                survivor,
+            } => write!(
+                formatter,
+                "galaxy {galaxy_id} merged into {survivor}; materialize a region in {survivor}"
+            ),
             Self::Generation(error) => write!(formatter, "could not generate region: {error}"),
             Self::Time(error) => write!(formatter, "could not catch region up: {error}"),
         }
@@ -1234,7 +1569,7 @@ impl Error for RegionError {
             Self::Generation(error) => Some(error),
             Self::Time(error) => Some(error),
             Self::CannotUnloadOrigin => None,
-            Self::UnknownGalaxy(_) => None,
+            Self::UnknownGalaxy(_) | Self::MergedGalaxy { .. } => None,
         }
     }
 }
@@ -1308,14 +1643,44 @@ mod tests {
         SimulationConfig::new(918_273_645, "1 kyr".parse().unwrap())
     }
 
+    fn legacy_state_without_galaxy_sections(universe: &Universe) -> String {
+        universe
+            .encode()
+            .split("[galaxy_motion]\n")
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+
     #[test]
     fn version_fifteen_state_loads_under_compact_binary_rules() {
         let universe = Universe::new(test_config()).unwrap();
-        let legacy = universe
-            .encode()
-            .replace("state_format_version=16", "state_format_version=15")
-            .replace("simulation_version=5", "simulation_version=4");
+        let legacy = legacy_state_without_galaxy_sections(&universe)
+            .replace("state_format_version=17", "state_format_version=15")
+            .replace("simulation_version=6", "simulation_version=4")
+            .replace("generation_version=13", "generation_version=12");
         assert_eq!(Universe::decode(&legacy).unwrap(), universe);
+    }
+
+    #[test]
+    fn version_sixteen_state_starts_galaxy_motion_at_saved_clock() {
+        let mut config = test_config();
+        config.generation.galaxies = 2;
+        let mut universe = Universe::new(config).unwrap();
+        universe.advance_ticks(10_000).unwrap();
+        let legacy = legacy_state_without_galaxy_sections(&universe)
+            .replace("state_format_version=17", "state_format_version=16")
+            .replace("simulation_version=6", "simulation_version=5")
+            .replace("generation_version=13", "generation_version=12");
+        let restored = Universe::decode(&legacy).unwrap();
+        let original =
+            GalaxyCatalogEntry::generate(config.seed, 1, config.generation.galaxy_radius_parsecs)
+                .unwrap();
+        assert_eq!(
+            restored.galaxies().nth(1).unwrap().position(),
+            original.position()
+        );
+        assert!(restored.galaxy_encounters().is_empty());
     }
 
     #[test]
@@ -1350,6 +1715,98 @@ mod tests {
                 .events()
                 .iter()
                 .all(|event| event.kind() == crate::AstroEventKind::BlackHoleMerger)
+        );
+    }
+
+    #[test]
+    fn galaxy_encounters_and_mergers_survive_checkpoints() {
+        let mut config = SimulationConfig::new(42, "1 year".parse().unwrap());
+        config.generation.galaxies = 8;
+        config.generation.star_systems = 1;
+        config.generation.planets_per_system_min = 0;
+        config.generation.planets_per_system_max = 0;
+        let mut whole = Universe::new(config).unwrap();
+        let mut split = whole.clone();
+        whole.advance_ticks(10_000_000_000).unwrap();
+        split.advance_ticks(5_000_000_000).unwrap();
+        split = Universe::decode(&split.encode()).unwrap();
+        split.advance_ticks(5_000_000_000).unwrap();
+        assert_eq!(split.galaxy_encounters(), whole.galaxy_encounters());
+        assert_eq!(split.galaxy_motion, whole.galaxy_motion);
+        assert_eq!(split.active_galaxy_count(), whole.active_galaxy_count());
+        assert!(
+            whole
+                .galaxy_encounters()
+                .iter()
+                .any(|event| event.kind() == GalaxyEncounterKind::ClosePass)
+        );
+        assert!(
+            whole
+                .galaxy_encounters()
+                .iter()
+                .any(|event| event.kind() == GalaxyEncounterKind::Merger)
+        );
+        assert!(whole.active_galaxy_count() < 8);
+        let absorbed = whole
+            .galaxies()
+            .find(|galaxy| galaxy.merged_into().is_some())
+            .unwrap();
+        let survivor = whole.surviving_galaxy_id(absorbed.id()).unwrap();
+        assert_ne!(absorbed.id(), survivor);
+        assert!(matches!(
+            whole.materialize_region_in(absorbed.id(), RegionCoord::new(1, 0, 0)),
+            Err(RegionError::MergedGalaxy { .. })
+        ));
+        assert_eq!(
+            Universe::decode(&whole.encode())
+                .unwrap()
+                .galaxy_encounters(),
+            whole.galaxy_encounters()
+        );
+    }
+
+    #[test]
+    fn encountered_progenitor_region_can_be_rematerialized() {
+        let mut config = SimulationConfig::new(42, "1 year".parse().unwrap());
+        config.generation.galaxies = 8;
+        config.generation.star_systems = 1;
+        config.generation.planets_per_system_min = 0;
+        config.generation.planets_per_system_max = 0;
+        let mut forecast = Universe::new(config).unwrap();
+        forecast.advance_ticks(10_000_000_000).unwrap();
+        let merger = forecast
+            .galaxy_encounters()
+            .iter()
+            .find(|event| event.kind() == GalaxyEncounterKind::Merger)
+            .unwrap();
+        let progenitor = if merger.first() == forecast.primary_galaxy_id() {
+            merger.second()
+        } else {
+            merger.first()
+        };
+        let mut universe = Universe::new(config).unwrap();
+        universe
+            .materialize_region_in(progenitor, RegionCoord::ORIGIN)
+            .unwrap();
+        universe.advance_ticks(10_000_000_000).unwrap();
+        let original = universe
+            .region_objects_in(progenitor, RegionCoord::ORIGIN)
+            .unwrap()
+            .clone();
+        let restored = Universe::decode(&universe.encode()).unwrap();
+        assert_eq!(
+            restored.region_objects_in(progenitor, RegionCoord::ORIGIN),
+            Some(&original)
+        );
+        universe
+            .unload_region_in(progenitor, RegionCoord::ORIGIN)
+            .unwrap();
+        universe
+            .materialize_region_in(progenitor, RegionCoord::ORIGIN)
+            .unwrap();
+        assert_eq!(
+            universe.region_objects_in(progenitor, RegionCoord::ORIGIN),
+            Some(&original)
         );
     }
 
@@ -1551,8 +2008,7 @@ mod tests {
     fn legacy_version_twelve_reconstructs_birth_composition_without_replaying_feedback() {
         let mut universe = Universe::new(test_config()).unwrap();
         universe.advance_ticks(1_000).unwrap();
-        let legacy = universe
-            .encode()
+        let legacy = legacy_state_without_galaxy_sections(&universe)
             .lines()
             .filter(|line| !line.starts_with("H|") && !line.starts_with("L|"))
             .map(|line| {
@@ -1561,9 +2017,9 @@ mod tests {
                 } else if line.starts_with("Y|") {
                     line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=16", "state_format_version=12")
-                        .replace("simulation_version=5", "simulation_version=1")
-                        .replace("generation_version=12", "generation_version=9")
+                    line.replace("state_format_version=17", "state_format_version=12")
+                        .replace("simulation_version=6", "simulation_version=1")
+                        .replace("generation_version=13", "generation_version=9")
                 }
             })
             .collect::<Vec<_>>()
@@ -1592,17 +2048,16 @@ mod tests {
     #[test]
     fn version_thirteen_state_gains_cloud_and_cluster_ancestry() {
         let universe = Universe::new(test_config()).unwrap();
-        let legacy = universe
-            .encode()
+        let legacy = legacy_state_without_galaxy_sections(&universe)
             .lines()
             .filter(|line| !line.starts_with("H|") && !line.starts_with("L|"))
             .map(|line| {
                 if line.starts_with("Y|") {
                     line.split('|').take(20).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=16", "state_format_version=13")
-                        .replace("simulation_version=5", "simulation_version=2")
-                        .replace("generation_version=12", "generation_version=10")
+                    line.replace("state_format_version=17", "state_format_version=13")
+                        .replace("simulation_version=6", "simulation_version=2")
+                        .replace("generation_version=13", "generation_version=10")
                 }
             })
             .collect::<Vec<_>>()
@@ -1623,8 +2078,7 @@ mod tests {
     #[test]
     fn version_fourteen_cloud_state_loads_without_shock_fields() {
         let universe = Universe::new(test_config()).unwrap();
-        let legacy = universe
-            .encode()
+        let legacy = legacy_state_without_galaxy_sections(&universe)
             .lines()
             .map(|line| {
                 if line.starts_with("H|") {
@@ -1632,9 +2086,9 @@ mod tests {
                 } else if line.starts_with("L|") {
                     line.split('|').take(8).collect::<Vec<_>>().join("|")
                 } else {
-                    line.replace("state_format_version=16", "state_format_version=14")
-                        .replace("simulation_version=5", "simulation_version=3")
-                        .replace("generation_version=12", "generation_version=11")
+                    line.replace("state_format_version=17", "state_format_version=14")
+                        .replace("simulation_version=6", "simulation_version=3")
+                        .replace("generation_version=13", "generation_version=11")
                 }
             })
             .collect::<Vec<_>>()
@@ -1871,9 +2325,9 @@ mod tests {
                 migrated.push(line.split('|').take(12).collect::<Vec<_>>().join("|"));
             } else {
                 migrated.push(
-                    line.replace("state_format_version=16", "state_format_version=2")
-                        .replace("generation_version=12", "generation_version=1")
-                        .replace("simulation_version=5", "simulation_version=1"),
+                    line.replace("state_format_version=17", "state_format_version=2")
+                        .replace("generation_version=13", "generation_version=1")
+                        .replace("simulation_version=6", "simulation_version=1"),
                 );
             }
         }
@@ -1884,7 +2338,7 @@ mod tests {
 
     #[test]
     fn version_six_state_is_accepted_and_upgraded() {
-        let encoded = Universe::new(test_config()).unwrap().encode();
+        let encoded = legacy_state_without_galaxy_sections(&Universe::new(test_config()).unwrap());
         let encoded = encoded
             .lines()
             .filter(|line| {
@@ -1906,17 +2360,17 @@ mod tests {
                     fields.remove(if line.starts_with("R|") { 1 } else { 3 });
                     fields.join("|")
                 } else {
-                    line.replace("state_format_version=16", "state_format_version=6")
-                        .replace("generation_version=12", "generation_version=3")
-                        .replace("simulation_version=5", "simulation_version=1")
+                    line.replace("state_format_version=17", "state_format_version=6")
+                        .replace("generation_version=13", "generation_version=3")
+                        .replace("simulation_version=6", "simulation_version=1")
                 }
             })
             .collect::<Vec<_>>()
             .join("\n");
         let decoded = Universe::decode(&encoded).unwrap();
         let upgraded = decoded.encode();
-        assert!(upgraded.contains("state_format_version=16"));
-        assert!(upgraded.contains("generation_version=12"));
+        assert!(upgraded.contains("state_format_version=17"));
+        assert!(upgraded.contains("generation_version=13"));
         assert_eq!(decoded.objects().gas_composition(), Default::default());
     }
 

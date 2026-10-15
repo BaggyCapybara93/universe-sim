@@ -213,15 +213,46 @@ elements but does not continuously shrink the displayed orbit or resolve the
 transient light curve. Generated binaries are usually wider than the compact
 orbits needed for a merger within a typical run.
 
-State format 16 versions the new simulation rules. Version 15 states load and
-continue with compact-binary outcomes enabled.
+State format 16 versions the compact-binary rules. Version 15 states load and
+continue with those outcomes enabled.
+
+## Galaxy encounters
+
+Galaxy catalog entries now move on deterministic straight-line trajectories.
+When two active galaxies enter a close-passage distance of three times their
+combined radii, the simulator records an encounter. A later approach within
+half their combined radii merges them. The primary galaxy survives a merger
+involving it; otherwise the lower-ID galaxy survives. The remnant gains a
+volume-combined radius, a weighted velocity, and an elliptical morphology.
+
+Close passages temporarily raise the share of available cloud gas eligible for
+star formation by 50%; mergers raise it by 100%. The boost lasts 200 million
+years, works across large time jumps, and is replayed when a previously known
+region is materialized. It draws from stored gas rather than creating mass.
+
+```console
+cargo run -- galaxies --state universe.state
+cargo run -- encounters --state universe.state
+```
+
+`simulate` also prints new encounters. Absorbed galaxies remain in the catalog
+as historical progenitors; their existing regions and objects retain their
+original IDs and remain inspectable. Previously known regions can be unloaded
+and rematerialized; new regions must use the surviving galaxy's ID. Galaxy
+trajectories describe catalog-scale motion; the
+stored coordinates of individual systems remain in their original local
+galaxy frames. The straight-line encounter thresholds and starburst factors are
+population prescriptions, not a gravitational N-body model.
+
+State format 17 stores galaxy motion, merger status, and encounter history.
+Older states load with galaxy motion beginning at their saved clock time.
 
 ## Current boundaries
 
 - The configuration reader supports the settings demonstrated in
   `cosmos.toml`. It is deliberately not a complete TOML implementation.
 - State files carry explicit format, simulation, generation, and RNG versions.
-  The earlier clock-only version 1 and object versions 2 through 15 are migrated;
+  The earlier clock-only version 1 and object versions 2 through 16 are migrated;
   unknown versions are rejected rather than silently misinterpreted.
 - Galactic populations use disk, bulge, and halo spatial/velocity profiles,
   correlated age and metallicity, a broken-power-law stellar mass function,

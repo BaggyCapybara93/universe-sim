@@ -3,6 +3,7 @@
 pub mod chemistry;
 pub mod config;
 pub mod events;
+mod galaxy;
 pub mod id;
 pub mod matter;
 pub mod objects;
@@ -15,7 +16,7 @@ pub mod units;
 
 pub use chemistry::{CompositionError, GasComposition};
 pub use config::{GenerationConfig, SimulationConfig};
-pub use events::{AstroEvent, AstroEventKind};
+pub use events::{AstroEvent, AstroEventKind, GalaxyEncounter, GalaxyEncounterKind};
 pub use id::{
     AsteroidBeltId, AsteroidId, CometCloudId, CometId, DebrisDiskId, GalaxyId, GasCloudId, MoonId,
     PlanetId, ProtoplanetaryDiskId, StarClusterId, StarId, StarSystemId, UniverseId,
