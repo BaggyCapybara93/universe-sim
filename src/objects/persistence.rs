@@ -165,7 +165,7 @@ impl ObjectRegistry {
             let [vx, vy, vz] = planet.velocity.meters_per_second();
             writeln!(
                 output,
-                "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                "P|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 planet.id.value(),
                 planet.system_id.value(),
                 planet.star_id.value(),
@@ -203,6 +203,7 @@ impl ObjectRegistry {
                 float_bits(planet.initial_orbital_radius.meters()),
                 float_bits(planet.migration_rate_au_per_year),
                 planet.scattering_count,
+                planet.birth_atmosphere.code(),
             )
             .expect("writing to a String cannot fail");
         }
@@ -665,9 +666,9 @@ impl ObjectRegistry {
                     super::insert_unique(&mut registry.stars, star.id, star, "star")?;
                 }
                 Some("P") => {
-                    if !matches!(fields.len(), 12 | 19 | 20 | 23 | 30 | 33) {
+                    if !matches!(fields.len(), 12 | 19 | 20 | 23 | 30 | 33 | 34) {
                         return Err(ObjectError(format!(
-                            "planet record has {} fields; expected 12, 19, 20, or 23",
+                            "planet record has {} fields; expected 12, 19, 20, 23, 30, 33, or 34",
                             fields.len()
                         )));
                     }
@@ -698,8 +699,8 @@ impl ObjectRegistry {
                         )?
                     };
                     let mass = Mass::from_kilograms(parse_float_bits(fields[4], "planet mass")?)?;
-                    let has_planetary_state = fields.len() == 30 || fields.len() == 33;
-                    let has_migration_state = fields.len() == 33;
+                    let has_planetary_state = matches!(fields.len(), 30 | 33 | 34);
+                    let has_migration_state = fields.len() >= 33;
                     let atmosphere = if has_planetary_state || fields.len() == 23 {
                         PlanetAtmosphere::parse_code(fields[22])?
                     } else {
@@ -718,6 +719,11 @@ impl ObjectRegistry {
                             ))?
                         },
                         atmosphere,
+                        birth_atmosphere: if fields.len() == 34 {
+                            PlanetAtmosphere::parse_code(fields[33])?
+                        } else {
+                            atmosphere
+                        },
                         atmosphere_loss_fraction: if has_planetary_state {
                             parse_float_bits(fields[23], "atmosphere loss fraction")?
                         } else {
@@ -776,7 +782,7 @@ impl ObjectRegistry {
                         position: parse_position(&fields[6..9])?,
                         velocity: parse_velocity(&fields[9..12])?,
                         orbital_elements,
-                        status: if matches!(fields.len(), 20 | 23 | 30 | 33) {
+                        status: if matches!(fields.len(), 20 | 23 | 30 | 33 | 34) {
                             PlanetStatus::parse_code(fields[19])?
                         } else {
                             PlanetStatus::Stable

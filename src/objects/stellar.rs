@@ -266,6 +266,41 @@ pub(super) fn stellar_properties(
     ))
 }
 
+/// Population-level XUV proxy for magnetically active, low-mass stars.
+/// The saturation lifetime and decay are intentionally simple; rotation is
+/// not tracked by the simulation.
+pub(super) fn xuv_activity_fraction(initial_mass: Mass, age: SimDuration) -> f64 {
+    let solar_mass = initial_mass.solar_masses();
+    if solar_mass > 1.5 || solar_mass <= 0.0 {
+        return 0.0;
+    }
+    let age_years = age.seconds() as f64 / SECONDS_PER_YEAR as f64;
+    let saturation_years = (100.0e6 / solar_mass.powi(2)).clamp(10.0e6, 2.0e9);
+    1.0e-3 * (age_years / saturation_years).max(1.0).powf(-1.3)
+}
+
+pub(super) fn modeled_xuv_luminosity_watts(
+    initial_mass: Mass,
+    metallicity: f64,
+    age: SimDuration,
+) -> f64 {
+    let (pre_main_years, main_years) = main_sequence_timing(initial_mass, metallicity);
+    let years = age.seconds() as f64 / SECONDS_PER_YEAR as f64;
+    if years >= pre_main_years + main_years {
+        return 0.0;
+    }
+    let stage = if years < pre_main_years * 0.15 {
+        StellarStage::Protostar
+    } else if years < pre_main_years {
+        StellarStage::PreMainSequence
+    } else {
+        StellarStage::MainSequence
+    };
+    let luminosity = stellar_properties(initial_mass, metallicity, stage, age)
+        .map_or(0.0, |(_, luminosity, _)| luminosity.watts());
+    luminosity * xuv_activity_fraction(initial_mass, age)
+}
+
 fn main_sequence_brightening(initial_mass: Mass, metallicity: f64, age: SimDuration) -> f64 {
     let (pre_main_sequence_years, main_sequence_years) =
         main_sequence_timing(initial_mass, metallicity);

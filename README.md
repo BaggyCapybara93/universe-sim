@@ -311,6 +311,33 @@ State format 19 versions the new luminosity rule. Older states load with their
 main-sequence luminosities and current planet temperatures refreshed to the new
 prescription; their previous detailed orbital histories cannot be recovered.
 
+## Stellar activity and atmospheric loss
+
+Low-mass stars (up to 1.5 solar masses) now have a modeled X-ray and extreme
+ultraviolet (XUV) luminosity. The population proxy holds XUV at 0.1% of stellar
+luminosity during a young saturation interval, then decreases it as age^-1.3.
+The saturation interval is 100 million years for a solar-mass star and lasts
+longer for lower-mass stars. This captures the broad young-star activity trend
+described by [Tu et al.](https://arxiv.org/abs/1504.04546); it does not track
+stellar rotation, flares, or stellar wind. The proxy is zero for hotter stars
+and after the main sequence, where this prescription does not apply.
+
+Planet atmosphere loss now uses accumulated modeled XUV exposure along the
+planet's secular migration path, scaled by planetary radius cubed divided by
+mass squared and by a factor for its birth atmosphere. This is an atmospheric
+**erosion indicator**, motivated by energy-limited escape scaling
+([Salz et al.](https://arxiv.org/abs/1511.09348)), rather than a measured gas
+mass loss or a climate model. The atmosphere changes to Thin at 45% modeled
+loss and None at 90%. Planetary mass, radius, and the matter inventory do not
+change. The estimate does not reconstruct scattering, binary irradiation, or
+individual flares. Inspect a star for current modeled XUV luminosity; inspect a
+planet for its birth/current atmosphere, accumulated loss, and current XUV flux.
+
+State format 20 stores birth atmospheres and versions this new escape rule.
+Older states use their saved current atmosphere as the birth classification
+and retain any larger previously recorded loss, because an earlier atmosphere
+cannot be recovered.
+
 ## Current boundaries
 
 - The configuration reader supports the settings demonstrated in
@@ -383,7 +410,8 @@ prescription; their previous detailed orbital histories cannot be recovered.
 - Planets include deterministic radius, broad atmosphere classification,
   equilibrium temperature, and a deliberately conservative potential-
   habitability heuristic. Planet temperatures are refreshed when stellar
-  luminosity changes; this is not yet a climate or atmospheric-escape solver.
+  luminosity changes; the XUV erosion indicator is not a climate or
+  hydrodynamic atmospheric-escape solver.
 
 ## Validation and performance baselines
 
@@ -424,7 +452,7 @@ same machine and toolchain.
 
 | Case | Seed | Systems | Ticks | Threads | Generation ms | Advancement ms | Fingerprint |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| small | 42 | 64 | 10,000 | 1 | 1.431 | 1.436 | `7bcc787c628e213e` |
-| small | 42 | 64 | 10,000 | 4 | 1.151 | 1.282 | `7bcc787c628e213e` |
-| large | 918273645 | 512 | 1,000,000 | 1 | 7.977 | 61.852 | `6d2da33b20b9bc81` |
-| large | 918273645 | 512 | 1,000,000 | 4 | 3.154 | 44.358 | `6d2da33b20b9bc81` |
+| small | 42 | 64 | 10,000 | 1 | 1.151 | 3.045 | `1a53b8c812d1ca83` |
+| small | 42 | 64 | 10,000 | 4 | 0.639 | 2.699 | `1a53b8c812d1ca83` |
+| large | 918273645 | 512 | 1,000,000 | 1 | 5.123 | 63.188 | `94b1a3795f9c05e2` |
+| large | 918273645 | 512 | 1,000,000 | 4 | 3.059 | 56.230 | `94b1a3795f9c05e2` |

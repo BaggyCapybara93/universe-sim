@@ -20,6 +20,67 @@ use super::{
 const HABITABLE_INNER_AU_AT_SOLAR_LUMINOSITY: f64 = 0.95;
 const HABITABLE_OUTER_AU_AT_SOLAR_LUMINOSITY: f64 = 1.37;
 
+/// A dimensionless XUV exposure relative to 1 Gyr at a saturated solar
+/// luminosity fraction (10^-3) and 1 AU. The gravity factor follows the
+/// R^3/M^2 scaling of energy-limited escape. Atmosphere-specific factors are
+/// qualitative because atmospheric mass and chemistry are not simulated.
+pub(super) fn modeled_atmosphere_loss_fraction(
+    planet: &Planet,
+    star: &Star,
+    through: SimDuration,
+) -> f64 {
+    let susceptibility = match planet.birth_atmosphere {
+        PlanetAtmosphere::None => return 0.0,
+        PlanetAtmosphere::Thin => 0.20,
+        PlanetAtmosphere::NitrogenRich => 0.08,
+        PlanetAtmosphere::CarbonDioxideRich => 0.04,
+        PlanetAtmosphere::HydrogenHelium => 1.0,
+    };
+    let start = planet.formed_at.seconds().max(star.formed_at.seconds());
+    let end = through.seconds();
+    if end <= start || star.initial_mass.solar_masses() > 1.5 {
+        return 0.0;
+    }
+    const SAMPLES: usize = 96;
+    let duration_years = (end - start) as f64 / SECONDS_PER_YEAR as f64;
+    let log_span = duration_years.ln_1p();
+    let mut exposure = 0.0;
+    for index in 0..SAMPLES {
+        let fraction = (((index as f64 + 0.5) / SAMPLES as f64 * log_span).exp_m1()
+            / duration_years)
+            .clamp(0.0, 1.0);
+        let lower =
+            ((index as f64 / SAMPLES as f64 * log_span).exp_m1() / duration_years).clamp(0.0, 1.0);
+        let upper = ((((index + 1) as f64 / SAMPLES as f64) * log_span).exp_m1() / duration_years)
+            .clamp(0.0, 1.0);
+        let at = start + ((end - start) as f64 * fraction) as u128;
+        let age = SimDuration::from_seconds(
+            star.epoch_age
+                .seconds()
+                .saturating_add(at.saturating_sub(star.formed_at.seconds())),
+        );
+        let xuv =
+            super::stellar::modeled_xuv_luminosity_watts(star.initial_mass, star.metallicity, age);
+        let orbit_au = modeled_orbit_au(planet, at);
+        let relative_flux =
+            xuv / (1.0e-3 * crate::units::WATTS_PER_SOLAR_LUMINOSITY) / orbit_au.powi(2);
+        exposure += relative_flux * (upper - lower) * duration_years / 1.0e9;
+    }
+    let mass_earth = planet.mass.earth_masses().max(1.0e-6);
+    let radius_earth = planet.radius.meters() / 6.371e6;
+    (exposure * susceptibility * radius_earth.powi(3) / mass_earth.powi(2)).clamp(0.0, 1.0)
+}
+
+pub(super) fn atmosphere_after_loss(birth: PlanetAtmosphere, loss: f64) -> PlanetAtmosphere {
+    if birth == PlanetAtmosphere::None || loss >= 0.90 {
+        PlanetAtmosphere::None
+    } else if loss >= 0.45 {
+        PlanetAtmosphere::Thin
+    } else {
+        birth
+    }
+}
+
 pub(super) fn modeled_habitable_zone_history(
     planet: &Planet,
     star: &Star,
@@ -274,6 +335,7 @@ pub(super) fn generate_planet(
         mass: Mass::from_earth_masses(mass_earth)?,
         radius,
         atmosphere,
+        birth_atmosphere: atmosphere,
         atmosphere_loss_fraction: 0.0,
         equilibrium_temperature,
         in_habitable_zone: is_in_habitable_zone(star_luminosity, orbit_au),

@@ -17,6 +17,87 @@ fn set_test_gas(objects: &mut ObjectRegistry, mass: f64, composition: crate::Gas
 }
 
 #[test]
+fn stellar_activity_saturates_then_declines_and_excludes_hot_stars() {
+    let solar = Mass::from_solar_masses(1.0).unwrap();
+    let young = stellar::xuv_activity_fraction(solar, SimDuration::from_years(50_000_000).unwrap());
+    let old =
+        stellar::xuv_activity_fraction(solar, SimDuration::from_years(5_000_000_000).unwrap());
+    assert_eq!(young, 1.0e-3);
+    assert!(old < young / 100.0);
+    assert_eq!(
+        stellar::xuv_activity_fraction(
+            Mass::from_solar_masses(0.3).unwrap(),
+            SimDuration::from_years(300_000_000).unwrap()
+        ),
+        young
+    );
+    assert_eq!(
+        stellar::xuv_activity_fraction(
+            Mass::from_solar_masses(3.0).unwrap(),
+            SimDuration::from_years(50_000_000).unwrap()
+        ),
+        0.0
+    );
+}
+
+#[test]
+fn atmospheric_loss_uses_cumulative_xuv_exposure_orbit_and_gravity() {
+    let star_id = StarId::new(11);
+    let system_id = StarSystemId::new(12);
+    let composition = crate::GasComposition::from_metallicity(0.014).unwrap();
+    let star = generation::generate_star_with_birth(
+        star_id,
+        system_id,
+        SimDuration::ZERO,
+        composition,
+        1.0,
+    )
+    .unwrap();
+    let make_planet = |id, orbit_au| {
+        let mut planet = planetary::generate_planet(
+            42,
+            PlanetId::new(id),
+            system_id,
+            star_id,
+            Position::default(),
+            crate::units::Velocity::default(),
+            star.current_mass,
+            star.luminosity,
+            orbit_au,
+            composition,
+            SimDuration::ZERO,
+            GenerationConfig::DEFAULT,
+        )
+        .unwrap();
+        planet.birth_atmosphere = PlanetAtmosphere::NitrogenRich;
+        planet.mass = Mass::from_earth_masses(1.0).unwrap();
+        planet.radius = Length::from_meters(6.371e6).unwrap();
+        planet.migration_rate_au_per_year = 0.0;
+        planet
+    };
+    let close = make_planet(13, 0.1);
+    let far = make_planet(14, 1.0);
+    let one_gyr = SimDuration::from_years(1_000_000_000).unwrap();
+    let close_loss = planetary::modeled_atmosphere_loss_fraction(&close, &star, one_gyr);
+    let far_loss = planetary::modeled_atmosphere_loss_fraction(&far, &star, one_gyr);
+    assert!(close_loss > far_loss * 10.0);
+    assert!(far_loss > 0.0);
+    assert_eq!(
+        planetary::atmosphere_after_loss(close.birth_atmosphere, close_loss),
+        PlanetAtmosphere::None
+    );
+    assert_eq!(
+        planetary::atmosphere_after_loss(far.birth_atmosphere, far_loss),
+        PlanetAtmosphere::NitrogenRich
+    );
+    let mut heavier = close.clone();
+    heavier.mass = Mass::from_earth_masses(close.mass.earth_masses() * 2.0).unwrap();
+    assert!(planetary::modeled_atmosphere_loss_fraction(&heavier, &star, one_gyr) < close_loss);
+    let two_gyr = SimDuration::from_years(2_000_000_000).unwrap();
+    assert!(planetary::modeled_atmosphere_loss_fraction(&far, &star, two_gyr) > far_loss);
+}
+
+#[test]
 fn main_sequence_brightening_creates_checkpoint_independent_habitable_windows() {
     let star_id = StarId::new(1);
     let system_id = StarSystemId::new(2);

@@ -100,6 +100,7 @@ fn creates_advances_and_inspects_generated_objects() {
     assert!(text(&inspected.stdout).contains(&format!("STAR {star_id}")));
     assert!(text(&inspected.stdout).contains("Age at epoch:"));
     assert!(text(&inspected.stdout).contains("Current mass:"));
+    assert!(text(&inspected.stdout).contains("Modeled XUV luminosity:"));
     assert!(text(&inspected.stdout).contains("Birth composition: H"));
     assert!(text(&inspected.stdout).contains("Source cluster: CL-"));
     assert!(text(&inspected.stdout).contains("Source cloud: GC-"));
@@ -112,6 +113,9 @@ fn creates_advances_and_inspects_generated_objects() {
     assert!(inspected_planet.status.success());
     assert!(text(&inspected_planet.stdout).contains("Modeled habitable-zone residence:"));
     assert!(text(&inspected_planet.stdout).contains("In modeled habitable zone:"));
+    assert!(text(&inspected_planet.stdout).contains("Birth atmosphere:"));
+    assert!(text(&inspected_planet.stdout).contains("Modeled atmosphere loss:"));
+    assert!(text(&inspected_planet.stdout).contains("Modeled XUV flux:"));
     let cloud_record = contents
         .lines()
         .find(|line| line.starts_with("H|"))
@@ -390,7 +394,7 @@ fn rejects_corrupted_or_incompatible_state_through_the_cli() {
 
     let contents = fs::read_to_string(&state)
         .unwrap()
-        .replace("state_format_version=19", "state_format_version=99");
+        .replace("state_format_version=20", "state_format_version=99");
     fs::write(&state, contents).unwrap();
     let inspected = run(&["inspect", "--state", state_text]);
     assert!(!inspected.status.success());

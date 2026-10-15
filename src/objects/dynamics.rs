@@ -10,11 +10,25 @@ use crate::time::{SECONDS_PER_YEAR, SimDuration, TimeError};
 use crate::units::{Length, METERS_PER_ASTRONOMICAL_UNIT, Mass, Position, Temperature, Velocity};
 
 use super::{
-    Moon, ObjectError, ObjectRegistry, Planet, PlanetAtmosphere, PlanetImpact, PlanetImpactKind,
-    PlanetStatus, StarSystem, StellarInteractionKind, StellarStage, StellarTransition,
+    Moon, ObjectError, ObjectRegistry, Planet, PlanetImpact, PlanetImpactKind, PlanetStatus,
+    StarSystem, StellarInteractionKind, StellarStage, StellarTransition,
 };
 
 impl ObjectRegistry {
+    pub(crate) fn refresh_planet_atmospheres(&mut self, elapsed: SimDuration) {
+        for planet in self.planets.values_mut() {
+            if let Some(star) = self.stars.get(&planet.star_id) {
+                planet.atmosphere_loss_fraction = planet.atmosphere_loss_fraction.max(
+                    super::planetary::modeled_atmosphere_loss_fraction(planet, star, elapsed),
+                );
+                planet.atmosphere = super::planetary::atmosphere_after_loss(
+                    planet.birth_atmosphere,
+                    planet.atmosphere_loss_fraction,
+                );
+            }
+        }
+    }
+
     /// Coalescence time from the quadrupole inspiral prescription. The
     /// eccentricity factor is an approximation for an initially eccentric orbit.
     pub(super) fn compact_merger_at(
@@ -814,15 +828,6 @@ impl ObjectRegistry {
                 .with_semi_major_axis(Length::from_astronomical_units(migrated_au)?)?;
             planet.orbital_radius = Length::from_astronomical_units(migrated_au)?;
             if let Some(star) = self.stars.get(&planet.star_id) {
-                let flux = star.luminosity.solar_luminosities() / migrated_au.powi(2).max(0.001);
-                planet.atmosphere_loss_fraction = (age_years / 1.0e9 * flux * 0.08).clamp(0.0, 1.0);
-                planet.atmosphere = if planet.atmosphere_loss_fraction >= 0.90 {
-                    PlanetAtmosphere::None
-                } else if planet.atmosphere_loss_fraction >= 0.45 {
-                    PlanetAtmosphere::Thin
-                } else {
-                    planet.atmosphere
-                };
                 planet.equilibrium_temperature = Temperature::from_kelvin(
                     super::planetary::equilibrium_temperature_kelvin(star.luminosity, migrated_au),
                 )?;
@@ -830,6 +835,7 @@ impl ObjectRegistry {
                     super::planetary::is_in_habitable_zone(star.luminosity, migrated_au);
             }
         }
+        self.refresh_planet_atmospheres(elapsed);
 
         let system_ids: Vec<_> = self.star_systems.keys().copied().collect();
         for system_id in system_ids {

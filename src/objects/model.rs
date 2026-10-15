@@ -722,6 +722,21 @@ impl Star {
         self.luminosity
     }
 
+    /// Modeled magnetic X-ray and extreme-ultraviolet luminosity.
+    pub fn modeled_xuv_luminosity(&self) -> Luminosity {
+        let active = matches!(
+            self.stage,
+            StellarStage::Protostar | StellarStage::PreMainSequence | StellarStage::MainSequence
+        );
+        Luminosity::from_watts(if active {
+            self.luminosity.watts()
+                * super::stellar::xuv_activity_fraction(self.initial_mass, self.age)
+        } else {
+            0.0
+        })
+        .expect("stellar XUV proxy is finite")
+    }
+
     pub const fn temperature(&self) -> Temperature {
         self.temperature
     }
@@ -1111,6 +1126,7 @@ pub struct Planet {
     pub(super) mass: Mass,
     pub(super) radius: Length,
     pub(super) atmosphere: PlanetAtmosphere,
+    pub(super) birth_atmosphere: PlanetAtmosphere,
     pub(super) atmosphere_loss_fraction: f64,
     pub(super) equilibrium_temperature: Temperature,
     pub(super) in_habitable_zone: bool,
@@ -1193,6 +1209,10 @@ impl Planet {
 
     pub const fn atmosphere(&self) -> PlanetAtmosphere {
         self.atmosphere
+    }
+
+    pub const fn birth_atmosphere(&self) -> PlanetAtmosphere {
+        self.birth_atmosphere
     }
 
     pub const fn atmosphere_loss_fraction(&self) -> f64 {

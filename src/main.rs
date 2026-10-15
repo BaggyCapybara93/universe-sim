@@ -1010,6 +1010,10 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, universe: &Univ
                 "  Luminosity: {:.6} solar luminosities",
                 star.luminosity().solar_luminosities()
             );
+            println!(
+                "  Modeled XUV luminosity: {:.3e} W",
+                star.modeled_xuv_luminosity().watts()
+            );
             println!("  Temperature: {:.2} K", star.temperature().kelvin());
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
             println!("  Velocity: [{vx:.3e}, {vy:.3e}, {vz:.3e}] m/s");
@@ -1031,6 +1035,11 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, universe: &Univ
             println!("  Mass: {:.6} Earth masses", planet.mass().earth_masses());
             println!("  Radius: {:.3} km", planet.radius().meters() / 1_000.0);
             println!("  Atmosphere: {}", planet.atmosphere());
+            println!("  Birth atmosphere: {}", planet.birth_atmosphere());
+            println!(
+                "  Modeled atmosphere loss: {:.1}%",
+                planet.atmosphere_loss_fraction() * 100.0
+            );
             println!(
                 "  Equilibrium temperature: {:.2} K",
                 planet.equilibrium_temperature().kelvin()
@@ -1044,6 +1053,12 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, universe: &Univ
                 planet.is_in_habitable_zone()
             );
             if let Some(star) = objects.star(planet.star_id()) {
+                let radius_m = planet.orbital_radius().meters();
+                println!(
+                    "  Modeled XUV flux: {:.3e} W/m^2",
+                    star.modeled_xuv_luminosity().watts()
+                        / (4.0 * std::f64::consts::PI * radius_m.powi(2))
+                );
                 match planet.modeled_habitable_zone_history(star, universe.clock().elapsed()) {
                     Ok(history) => {
                         println!(
