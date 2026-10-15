@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Write as _};
@@ -9,8 +10,9 @@ use std::time::Duration;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use universe_sim::{
-    GalaxyId, GasComposition, MAX_CONCURRENT_GALAXIES, ObjectId, ObjectRef, ObjectRegistry,
-    RegionCoord, SimDuration, SimulationConfig, TickDuration, Universe,
+    AstroEventKind, GalaxyEncounterKind, GalaxyId, GasComposition, MAX_CONCURRENT_GALAXIES,
+    MatterInventory, ObjectId, ObjectRef, ObjectRegistry, PlanetStatus, RegionCoord, SimDuration,
+    SimulationConfig, StellarStage, TickDuration, Universe,
 };
 
 #[derive(Debug, Parser)]
@@ -53,6 +55,8 @@ enum CliCommand {
     Events(EventsArgs),
     /// List recorded galaxy close passages and mergers.
     Encounters(EncountersArgs),
+    /// Summarize materialized populations, recorded events, and matter.
+    Stats(StatsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -228,6 +232,13 @@ struct EncountersArgs {
     limit: usize,
 }
 
+#[derive(Debug, Args)]
+struct StatsArgs {
+    /// Universe state to summarize.
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Some(threads) = cli.threads
@@ -260,6 +271,7 @@ fn run(command: CliCommand, diagnostics: &Diagnostics) -> Result<(), CliError> {
         CliCommand::Galaxies(args) => list_galaxies(args, diagnostics),
         CliCommand::Events(args) => list_events(args, diagnostics),
         CliCommand::Encounters(args) => list_encounters(args, diagnostics),
+        CliCommand::Stats(args) => show_stats(args, diagnostics),
     }
 }
 
@@ -693,6 +705,152 @@ fn list_encounters(args: EncountersArgs, diagnostics: &Diagnostics) -> Result<()
     for encounter in universe.galaxy_encounters().iter().skip(skip) {
         print_encounter(*encounter, "  ");
     }
+    Ok(())
+}
+
+fn show_stats(args: StatsArgs, diagnostics: &Diagnostics) -> Result<(), CliError> {
+    let universe = Universe::load(&args.state)?;
+    diagnostics.emit("state_loaded", &universe, Some(&args.state));
+    let counts = universe.materialized_counts();
+    let mut known_regions = 0;
+    let mut materialized_regions = 0;
+    let mut white_dwarfs = 0;
+    let mut neutron_stars = 0;
+    let mut black_holes = 0;
+    let mut stable_planets = 0;
+    let mut irradiated_planets = 0;
+    let mut unbound_planets = 0;
+    let mut destroyed_planets = 0;
+    for (key, _, materialized) in universe.galaxy_regions() {
+        known_regions += 1;
+        if !materialized {
+            continue;
+        }
+        materialized_regions += 1;
+        let objects = universe
+            .region_objects_in(key.galaxy_id(), key.coordinate())
+            .expect("materialized region has an object registry");
+        for star in objects.stars() {
+            match star.stage() {
+                StellarStage::WhiteDwarf => white_dwarfs += 1,
+                StellarStage::NeutronStar => neutron_stars += 1,
+                StellarStage::BlackHole => black_holes += 1,
+                _ => {}
+            }
+        }
+        for planet in objects.planets() {
+            match planet.status() {
+                PlanetStatus::Stable => stable_planets += 1,
+                PlanetStatus::Irradiated => irradiated_planets += 1,
+                PlanetStatus::Unbound => unbound_planets += 1,
+                PlanetStatus::Destroyed => destroyed_planets += 1,
+            }
+        }
+    }
+
+    let mut event_kinds = BTreeMap::<String, usize>::new();
+    let mut births = 0;
+    let mut stellar_endpoints = 0;
+    let mut impacts = 0;
+    for event in universe.events() {
+        *event_kinds.entry(event.kind().to_string()).or_default() += 1;
+        if event.kind() == AstroEventKind::StarFormation {
+            births += 1;
+        }
+        if event.from() != event.to()
+            && matches!(
+                event.to(),
+                StellarStage::WhiteDwarf
+                    | StellarStage::NeutronStar
+                    | StellarStage::BlackHole
+                    | StellarStage::Disrupted
+            )
+        {
+            stellar_endpoints += 1;
+        }
+        impacts += event.impacts().len();
+    }
+    let close_passages = universe
+        .galaxy_encounters()
+        .iter()
+        .filter(|encounter| encounter.kind() == GalaxyEncounterKind::ClosePass)
+        .count();
+    let mergers = universe.galaxy_encounters().len() - close_passages;
+
+    let mut matter = MatterInventory::default();
+    for (_, inventory) in universe.matter_inventories() {
+        matter.gas_solar_masses += inventory.gas_solar_masses;
+        matter.stellar_solar_masses += inventory.stellar_solar_masses;
+        matter.protoplanetary_disk_solar_masses += inventory.protoplanetary_disk_solar_masses;
+        matter.planet_solar_masses += inventory.planet_solar_masses;
+        matter.moon_solar_masses += inventory.moon_solar_masses;
+        matter.asteroid_solar_masses += inventory.asteroid_solar_masses;
+        matter.comet_solar_masses += inventory.comet_solar_masses;
+        matter.aggregate_solar_masses += inventory.aggregate_solar_masses;
+        matter.gas_metal_solar_masses += inventory.gas_metal_solar_masses;
+        matter.stellar_birth_metal_proxy_solar_masses +=
+            inventory.stellar_birth_metal_proxy_solar_masses;
+        matter.disk_birth_metal_proxy_solar_masses += inventory.disk_birth_metal_proxy_solar_masses;
+    }
+
+    println!("STATS {}", universe.id());
+    println!(
+        "  Tick: {} ({})",
+        universe.clock().tick(),
+        universe.clock().elapsed()
+    );
+    println!(
+        "  Galaxies: {} active / {} cataloged",
+        universe.active_galaxy_count(),
+        counts.galaxies
+    );
+    println!("  Regions: {materialized_regions} materialized / {known_regions} known");
+    println!("CURRENT MATERIALIZED POPULATION");
+    println!("  Star systems: {}", counts.star_systems);
+    println!("  Stars: {}", counts.stars);
+    println!("  Planets: {}", counts.planets);
+    println!("  Moons: {}", counts.moons);
+    println!(
+        "  Stellar remnants: {white_dwarfs} white dwarfs, {neutron_stars} neutron stars, {black_holes} black holes"
+    );
+    println!(
+        "  Planet status: {stable_planets} stable, {irradiated_planets} irradiated, {unbound_planets} unbound, {destroyed_planets} destroyed"
+    );
+    println!("RECORDED HISTORY");
+    println!("  Stellar events: {}", universe.events().len());
+    println!("  Star formation events: {births}");
+    println!("  Stellar endpoint transitions: {stellar_endpoints}");
+    println!("  Planetary impacts: {impacts}");
+    println!("  Galaxy encounters: {close_passages} close passages, {mergers} mergers");
+    if !event_kinds.is_empty() {
+        println!("  Event kinds:");
+        for (kind, count) in event_kinds {
+            println!("    {kind}: {count}");
+        }
+    }
+    println!("MATTER IN MATERIALIZED REGIONS (solar masses)");
+    println!("  Gas: {:.6e}", matter.gas_solar_masses);
+    println!("  Stars: {:.6e}", matter.stellar_solar_masses);
+    println!(
+        "  Protoplanetary disks: {:.6e}",
+        matter.protoplanetary_disk_solar_masses
+    );
+    println!("  Planets: {:.6e}", matter.planet_solar_masses);
+    println!("  Moons: {:.6e}", matter.moon_solar_masses);
+    println!(
+        "  Individual asteroids: {:.6e}",
+        matter.asteroid_solar_masses
+    );
+    println!("  Individual comets: {:.6e}", matter.comet_solar_masses);
+    println!("  Tracked total: {:.6e}", matter.tracked_solar_masses());
+    println!(
+        "  Aggregate small-body populations (may overlap sampled bodies): {:.6e}",
+        matter.aggregate_solar_masses
+    );
+    println!(
+        "  Tracked metal proxy: {:.6e}",
+        matter.tracked_metal_proxy_solar_masses()
+    );
     Ok(())
 }
 

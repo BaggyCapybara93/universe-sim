@@ -4,6 +4,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
+use universe_sim::Universe;
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -219,6 +220,58 @@ fn creates_and_materializes_a_secondary_galaxy() {
     let regions = run(&["regions", "--state", state_text, "--galaxy", galaxy_ids[1]]);
     assert!(regions.status.success(), "{}", text(&regions.stderr));
     assert!(text(&regions.stdout).contains(&format!("{}@0,0,0", galaxy_ids[1])));
+}
+
+#[test]
+fn stats_summarizes_all_materialized_regions_without_changing_state() {
+    let directory = TestDirectory::new();
+    let state = directory.path().join("stats.state");
+    let state_text = state.to_str().unwrap();
+    let created = run(&[
+        "new",
+        "--seed",
+        "42",
+        "--galaxies",
+        "2",
+        "--star-systems",
+        "2",
+        "--detail-all-galaxies",
+        "--output",
+        state_text,
+    ]);
+    assert!(created.status.success(), "{}", text(&created.stderr));
+    let saved_before = fs::read(&state).unwrap();
+    let universe = Universe::load(&state).unwrap();
+    let expected_gas: f64 = universe
+        .matter_inventories()
+        .map(|(_, inventory)| inventory.gas_solar_masses)
+        .sum();
+
+    let stats = run(&["stats", "--state", state_text]);
+    assert!(stats.status.success(), "{}", text(&stats.stderr));
+    let output = text(&stats.stdout);
+    assert!(output.contains("Regions: 2 materialized / 2 known"));
+    assert!(output.contains("Star systems: 4"));
+    assert!(output.contains("Star formation events: 0"));
+    assert!(output.contains("Stellar endpoint transitions: 0"));
+    assert!(output.contains("Planetary impacts: 0"));
+    assert!(output.contains(&format!("Gas: {expected_gas:.6e}")));
+    assert!(output.contains("Tracked total:"));
+    assert_eq!(fs::read(&state).unwrap(), saved_before);
+
+    let materialized = run(&["materialize", "--state", state_text, "--region", "1,0,0"]);
+    assert!(
+        materialized.status.success(),
+        "{}",
+        text(&materialized.stderr)
+    );
+    let unloaded = run(&["unload", "--state", state_text, "--region", "1,0,0"]);
+    assert!(unloaded.status.success(), "{}", text(&unloaded.stderr));
+    let stats_after_unload = run(&["stats", "--state", state_text]);
+    assert!(stats_after_unload.status.success());
+    let output = text(&stats_after_unload.stdout);
+    assert!(output.contains("Regions: 2 materialized / 3 known"));
+    assert!(output.contains("Star systems: 4"));
 }
 
 #[test]

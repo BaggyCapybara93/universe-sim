@@ -109,6 +109,18 @@ Inspect the saved state:
 cargo run -- inspect --state universe.state
 ```
 
+Summarize the current materialized population, recorded events and encounters,
+and matter inventory:
+
+```console
+cargo run -- stats --state universe.state
+```
+
+Current population and matter totals cover materialized regions only. Recorded
+history includes events retained from unloaded regions. The tracked matter total
+excludes aggregate small-body populations because they may overlap sampled
+individual bodies; it is an inventory, not a whole-universe conservation total.
+
 Inspect a particular generated object using an ID shown in the state or another
 inspection result:
 

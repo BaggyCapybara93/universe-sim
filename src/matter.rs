@@ -8,7 +8,7 @@
 
 use crate::objects::ObjectRegistry;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MatterInventory {
     pub gas_solar_masses: f64,
     pub stellar_solar_masses: f64,
