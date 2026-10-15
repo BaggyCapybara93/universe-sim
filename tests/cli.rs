@@ -222,6 +222,67 @@ fn creates_and_materializes_a_secondary_galaxy() {
 }
 
 #[test]
+fn detailed_mode_populates_every_galaxy_and_advances_the_saved_state() {
+    let directory = TestDirectory::new();
+    let state = directory.path().join("detailed.state");
+    let state_text = state.to_str().unwrap();
+    let created = run(&[
+        "new",
+        "--seed",
+        "42",
+        "--galaxies",
+        "3",
+        "--star-systems",
+        "4",
+        "--detail-all-galaxies",
+        "--output",
+        state_text,
+    ]);
+    assert!(created.status.success(), "{}", text(&created.stderr));
+    assert!(text(&created.stdout).contains("Star systems: 12"));
+
+    let regions = run(&["regions", "--state", state_text]);
+    assert!(regions.status.success(), "{}", text(&regions.stderr));
+    assert_eq!(
+        text(&regions.stdout).matches("0,0,0: materialized").count(),
+        3
+    );
+
+    let advanced = run(&["simulate", "--state", state_text, "--ticks", "10"]);
+    assert!(advanced.status.success(), "{}", text(&advanced.stderr));
+    let inspected = run(&["inspect", "--state", state_text]);
+    assert!(inspected.status.success(), "{}", text(&inspected.stderr));
+    assert!(text(&inspected.stdout).contains("Star systems: 12"));
+}
+
+#[test]
+fn sparse_state_can_materialize_every_galaxy() {
+    let directory = TestDirectory::new();
+    let state = directory.path().join("sparse.state");
+    let state_text = state.to_str().unwrap();
+    let created = run(&[
+        "new",
+        "--seed",
+        "42",
+        "--galaxies",
+        "3",
+        "--star-systems",
+        "4",
+        "--output",
+        state_text,
+    ]);
+    assert!(created.status.success(), "{}", text(&created.stderr));
+    let materialized = run(&["materialize", "--state", state_text, "--all-galaxies"]);
+    assert!(
+        materialized.status.success(),
+        "{}",
+        text(&materialized.stderr)
+    );
+    assert!(text(&materialized.stdout).contains("Newly materialized galaxies: 2"));
+    assert!(text(&materialized.stdout).contains("Star systems: 12"));
+}
+
+#[test]
 fn lists_persisted_galaxy_encounters_and_mergers() {
     let directory = TestDirectory::new();
     let state = directory.path().join("encounters.state");

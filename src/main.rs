@@ -78,6 +78,10 @@ struct NewArgs {
     #[arg(long, value_name = "COUNT")]
     galaxies: Option<u16>,
 
+    /// Generate explicit star systems and planets in every configured galaxy.
+    #[arg(long)]
+    detail_all_galaxies: bool,
+
     /// Read the seed and tick duration from a configuration file.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["seed", "tick_length"])]
     config: Option<PathBuf>,
@@ -151,12 +155,21 @@ struct MaterializeArgs {
     state: PathBuf,
 
     /// Galaxy to materialize within; defaults to the primary galaxy.
-    #[arg(long, value_name = "G-ID")]
+    #[arg(long, value_name = "G-ID", conflicts_with = "all_galaxies")]
     galaxy: Option<GalaxyId>,
 
     /// Procedural region coordinate in x,y,z form.
-    #[arg(long, allow_hyphen_values = true)]
-    region: RegionCoord,
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        required_unless_present = "all_galaxies",
+        conflicts_with = "all_galaxies"
+    )]
+    region: Option<RegionCoord>,
+
+    /// Materialize the origin population in every configured galaxy.
+    #[arg(long)]
+    all_galaxies: bool,
 
     #[arg(long, value_name = "PATH")]
     output: Option<PathBuf>,
@@ -267,11 +280,14 @@ fn new_universe(args: NewArgs, diagnostics: &Diagnostics) -> Result<(), CliError
         config.generation.galaxies = galaxies;
     }
 
-    let universe = Universe::new(config)?;
+    let mut universe = Universe::new(config)?;
+    if args.detail_all_galaxies {
+        universe.materialize_all_galaxy_origins()?;
+    }
     diagnostics.emit("universe_generated", &universe, None);
     universe.save(&args.output)?;
     diagnostics.emit("state_saved", &universe, Some(&args.output));
-    let counts = universe.objects().counts();
+    let counts = universe.materialized_counts();
     println!("Universe created.");
     println!("  ID: {}", universe.id());
     println!("  Seed: {}", universe.seed());
@@ -489,7 +505,7 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
         return Ok(());
     }
 
-    let counts = universe.objects().counts();
+    let counts = universe.materialized_counts();
     println!("UNIVERSE {}", universe.id());
     println!("  Seed: {}", universe.seed());
     println!("  Universal tick: {}", universe.clock().tick());
@@ -527,17 +543,33 @@ fn materialize(args: MaterializeArgs, diagnostics: &Diagnostics) -> Result<(), C
     let output = args.output.unwrap_or_else(|| args.state.clone());
     let mut universe = Universe::load(&args.state)?;
     diagnostics.emit("state_loaded", &universe, Some(&args.state));
+    if args.all_galaxies {
+        let created = universe.materialize_all_galaxy_origins()?;
+        universe.save(&output)?;
+        diagnostics.emit("state_saved", &universe, Some(&output));
+        let counts = universe.materialized_counts();
+        println!("Detailed origin populations are available in every galaxy.");
+        println!("  Newly materialized galaxies: {created}");
+        println!("  Star systems: {}", counts.star_systems);
+        println!("  Stars: {}", counts.stars);
+        println!("  Planets: {}", counts.planets);
+        println!("  State: {}", output.display());
+        return Ok(());
+    }
+    let region = args
+        .region
+        .expect("clap requires --region or --all-galaxies");
     let galaxy_id = args.galaxy.unwrap_or_else(|| universe.primary_galaxy_id());
-    let created = universe.materialize_region_in(galaxy_id, args.region)?;
+    let created = universe.materialize_region_in(galaxy_id, region)?;
     universe.save(&output)?;
     diagnostics.emit("state_saved", &universe, Some(&output));
     let objects = universe
-        .region_objects_in(galaxy_id, args.region)
+        .region_objects_in(galaxy_id, region)
         .expect("materialized region is available");
     let counts = objects.counts();
     println!(
         "Region {} {} in {}.",
-        args.region,
+        region,
         if created {
             "materialized"
         } else {
@@ -1196,7 +1228,7 @@ mod tests {
         let CliCommand::Materialize(args) = cli.command else {
             panic!("expected materialize command");
         };
-        assert_eq!(args.region, RegionCoord::new(-18, 4, -91));
+        assert_eq!(args.region, Some(RegionCoord::new(-18, 4, -91)));
     }
 
     #[test]

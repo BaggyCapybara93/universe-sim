@@ -19,7 +19,7 @@ use crate::galaxy::{GalaxyMotion, advance_encounters, encounter_id};
 use crate::id::{GalaxyId, UniverseId};
 use crate::matter::MatterInventory;
 use crate::objects::{
-    CentralBlackHole, GalaxyCatalogEntry, ObjectError, ObjectRegistry, PlanetImpact,
+    CentralBlackHole, GalaxyCatalogEntry, ObjectCounts, ObjectError, ObjectRegistry, PlanetImpact,
     PlanetImpactKind, StellarTransition,
 };
 use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
@@ -112,6 +112,29 @@ impl Universe {
 
     pub const fn objects(&self) -> &ObjectRegistry {
         &self.objects
+    }
+
+    /// Counts explicit objects in every currently materialized galaxy region.
+    pub fn materialized_counts(&self) -> ObjectCounts {
+        let mut total = self.objects.counts();
+        for region in self.regions.values() {
+            let counts = region.objects().counts();
+            total.gas_clouds += counts.gas_clouds;
+            total.star_clusters += counts.star_clusters;
+            total.star_systems += counts.star_systems;
+            total.stars += counts.stars;
+            total.planets += counts.planets;
+            total.moons += counts.moons;
+            total.asteroids += counts.asteroids;
+            total.comets += counts.comets;
+            total.asteroid_belts += counts.asteroid_belts;
+            total.comet_clouds += counts.comet_clouds;
+            total.debris_disks += counts.debris_disks;
+            total.protoplanetary_disks += counts.protoplanetary_disks;
+            total.gas_reservoirs += counts.gas_reservoirs;
+        }
+        total.galaxies = self.galaxies.len();
+        total
     }
 
     /// Inventories for materialized regions only; unloaded regions have no
@@ -218,6 +241,20 @@ impl Universe {
 
     pub fn materialize_region(&mut self, coordinate: RegionCoord) -> Result<bool, RegionError> {
         self.materialize_region_in(self.primary_galaxy_id(), coordinate)
+    }
+
+    /// Ensures every cataloged galaxy has an explicit origin population.
+    /// Returns the number of regions newly materialized. Existing regions are
+    /// left intact, so this can also upgrade a previously sparse saved state.
+    pub fn materialize_all_galaxy_origins(&mut self) -> Result<usize, RegionError> {
+        let galaxy_ids: Vec<_> = self.galaxies.iter().map(|galaxy| galaxy.id()).collect();
+        let mut created = 0;
+        for galaxy_id in galaxy_ids {
+            if self.materialize_region_in(galaxy_id, RegionCoord::ORIGIN)? {
+                created += 1;
+            }
+        }
+        Ok(created)
     }
 
     pub fn materialize_region_in(
@@ -1964,6 +2001,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(serial, four_at_once);
+    }
+
+    #[test]
+    fn all_galaxy_origins_are_explicit_and_survive_advancement_and_save() {
+        let mut config = test_config();
+        config.generation.galaxies = 3;
+        config.generation.star_systems = 3;
+        let mut universe = Universe::new(config).unwrap();
+
+        assert_eq!(universe.materialize_all_galaxy_origins().unwrap(), 2);
+        assert_eq!(universe.materialize_all_galaxy_origins().unwrap(), 0);
+        assert_eq!(universe.materialized_counts().star_systems, 9);
+        assert!(universe.materialized_counts().stars >= 9);
+        assert!(universe.materialized_counts().planets > 0);
+        assert!(universe.galaxy_regions().all(|(_, _, loaded)| loaded));
+
+        universe.advance_ticks(10_000).unwrap();
+        assert_eq!(universe.galaxy_regions().count(), 3);
+        assert!(
+            universe
+                .galaxy_regions()
+                .all(|(_, tick, loaded)| loaded && tick == 10_000)
+        );
+        assert_eq!(Universe::decode(&universe.encode()).unwrap(), universe);
     }
 
     #[test]

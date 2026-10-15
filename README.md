@@ -31,9 +31,28 @@ cargo run -- new --seed 42 --galaxies 64 --star-systems 1000 --output universe.s
 cargo run -- galaxies --state universe.state
 ```
 
+For a finite universe with detailed star and planet objects in every configured
+galaxy, materialize one origin population per galaxy at creation:
+
+```console
+cargo run --release -- new --seed 42 --galaxies 10 --star-systems 1000 \
+  --detail-all-galaxies --output universe.state
+cargo run --release -- simulate --state universe.state --ticks 10000
+```
+
+This generates 10,000 initial star systems across the ten galaxies, plus their
+procedurally determined companion stars and planets. All materialized systems
+advance on the same clock and are stored in the checkpoint. To add detailed
+origin populations to an existing sparse state, run
+`cargo run --release -- materialize --state universe.state --all-galaxies`.
+The size of this finite model is set by the configured galaxy and system counts;
+it does not claim to enumerate all stars in the physical universe. The system
+count is per galaxy in this mode, so memory and checkpoint size grow with the
+product of the two counts.
+
 `--star-systems` controls the population batch in each materialized region, not
-a universe-wide ceiling. Only the primary galaxy's origin is generated during
-`new`; other galaxy regions are generated when requested. The per-region safety
+a universe-wide ceiling. By default, only the primary galaxy's origin is
+generated during `new`; other galaxy regions are generated when requested. The per-region safety
 limit remains 100,000 systems, while aggregate potential population grows with
 the number of materialized galaxy regions.
 
