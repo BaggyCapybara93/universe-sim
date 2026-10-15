@@ -19,8 +19,8 @@ use crate::galaxy::{GalaxyMotion, advance_encounters, encounter_id};
 use crate::id::{GalaxyId, UniverseId};
 use crate::matter::MatterInventory;
 use crate::objects::{
-    GalaxyCatalogEntry, ObjectError, ObjectRegistry, PlanetImpact, PlanetImpactKind,
-    StellarTransition,
+    CentralBlackHole, GalaxyCatalogEntry, ObjectError, ObjectRegistry, PlanetImpact,
+    PlanetImpactKind, StellarTransition,
 };
 use crate::region::{GalaxyRegion, MaterializedRegion, RegionCoord};
 use crate::rng::{derive_object_seed, derive_region_seed};
@@ -135,6 +135,24 @@ impl Universe {
 
     pub fn galaxy_encounters(&self) -> &[GalaxyEncounter] {
         &self.galaxy_encounters
+    }
+
+    /// Current central black-hole and AGN state for a galaxy or its merger remnant.
+    pub fn central_black_hole(&self, galaxy_id: GalaxyId) -> Option<CentralBlackHole> {
+        let remnant = self.surviving_galaxy_id(galaxy_id)?;
+        let progenitors: BTreeSet<_> = self
+            .galaxies
+            .iter()
+            .filter_map(|galaxy| {
+                (self.surviving_galaxy_id(galaxy.id()) == Some(remnant)).then_some(galaxy.id())
+            })
+            .collect();
+        Some(crate::galaxy::estimate_central_black_hole(
+            &self.galaxies,
+            &progenitors,
+            &self.galaxy_encounters,
+            self.clock.elapsed(),
+        ))
     }
 
     pub fn active_galaxy_count(&self) -> usize {

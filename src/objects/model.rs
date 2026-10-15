@@ -27,6 +27,82 @@ pub enum GalaxyMorphology {
     Dwarf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AGNPhase {
+    Quiescent,
+    LowLuminosity,
+    Seyfert,
+    Quasar,
+}
+
+impl fmt::Display for AGNPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Quiescent => "quiescent",
+            Self::LowLuminosity => "low luminosity",
+            Self::Seyfert => "Seyfert",
+            Self::Quasar => "quasar",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CentralBlackHole {
+    mass_solar: f64,
+    spin: f64,
+    eddington_ratio: f64,
+    accretion_rate_solar_per_year: f64,
+    luminosity_watts: f64,
+    phase: AGNPhase,
+}
+
+impl CentralBlackHole {
+    pub(crate) fn from_activity(mass_solar: f64, spin: f64, eddington_ratio: f64) -> Self {
+        const SOLAR_MASS_KG: f64 = 1.988_47e30;
+        const SECONDS_PER_YEAR: f64 = 31_557_600.0;
+        const LIGHT_SPEED: f64 = 299_792_458.0;
+        const RADIATIVE_EFFICIENCY: f64 = 0.1;
+        let eddington_ratio = eddington_ratio.clamp(0.0, 1.0);
+        let luminosity_watts = 1.26e31 * mass_solar * eddington_ratio;
+        let accretion_rate_solar_per_year =
+            luminosity_watts / RADIATIVE_EFFICIENCY / LIGHT_SPEED.powi(2) / SOLAR_MASS_KG
+                * SECONDS_PER_YEAR;
+        let phase = match eddington_ratio {
+            value if value < 1.0e-4 => AGNPhase::Quiescent,
+            value if value < 1.0e-2 => AGNPhase::LowLuminosity,
+            value if value < 0.1 => AGNPhase::Seyfert,
+            _ => AGNPhase::Quasar,
+        };
+        Self {
+            mass_solar,
+            spin: spin.clamp(0.0, 0.998),
+            eddington_ratio,
+            accretion_rate_solar_per_year,
+            luminosity_watts,
+            phase,
+        }
+    }
+
+    pub const fn mass_solar(self) -> f64 {
+        self.mass_solar
+    }
+    pub const fn spin(self) -> f64 {
+        self.spin
+    }
+    pub const fn eddington_ratio(self) -> f64 {
+        self.eddington_ratio
+    }
+    pub const fn accretion_rate_solar_per_year(self) -> f64 {
+        self.accretion_rate_solar_per_year
+    }
+    pub const fn luminosity_watts(self) -> f64 {
+        self.luminosity_watts
+    }
+    pub const fn phase(self) -> AGNPhase {
+        self.phase
+    }
+}
+
 impl fmt::Display for GalaxyMorphology {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -92,6 +168,21 @@ impl GalaxyCatalogEntry {
 
     pub const fn merged_into(self) -> Option<GalaxyId> {
         self.merged_into
+    }
+
+    pub fn black_hole_seed_mass_solar(self) -> f64 {
+        let size = (self.radius_parsecs / 25_000.0).max(0.01);
+        match self.morphology {
+            GalaxyMorphology::Spiral => 4.3e6 * size.powf(0.5),
+            GalaxyMorphology::Elliptical => 1.0e8 * size.powf(1.2),
+            GalaxyMorphology::Irregular => 1.0e5 * size.powf(0.7),
+            GalaxyMorphology::Dwarf => 1.0e4 * size.powf(0.7),
+        }
+    }
+
+    pub fn black_hole_seed_spin(self) -> f64 {
+        let unit = (self.id.value() >> 11) as f64 / ((1_u64 << 53) as f64);
+        0.2 + 0.7 * unit
     }
 
     pub(crate) fn with_dynamics(

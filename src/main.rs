@@ -482,7 +482,7 @@ fn inspect(args: InspectArgs, diagnostics: &Diagnostics) -> Result<(), CliError>
         let object = objects
             .find(id)
             .ok_or_else(|| CliError::message(format!("object {id} was not found")))?;
-        print_object(object, objects, universe.clock().elapsed());
+        print_object(object, objects, &universe);
         if let Some(dynamics) = dynamics {
             println!("  Dynamics: {dynamics}");
         }
@@ -632,6 +632,9 @@ fn list_galaxies(args: GalaxiesArgs, diagnostics: &Diagnostics) -> Result<(), Cl
                 .merged_into()
                 .map_or_else(String::new, |id| format!(", merged into {id}")),
         );
+        if let Some(black_hole) = universe.central_black_hole(galaxy.id()) {
+            print_central_black_hole(black_hole, "    ");
+        }
     }
     Ok(())
 }
@@ -671,6 +674,27 @@ fn print_encounter(encounter: universe_sim::GalaxyEncounter, indentation: &str) 
     );
 }
 
+fn print_central_black_hole(black_hole: universe_sim::CentralBlackHole, indentation: &str) {
+    println!(
+        "{indentation}Central black hole: {:.3e} solar masses",
+        black_hole.mass_solar()
+    );
+    println!("{indentation}  Spin: {:.3}", black_hole.spin());
+    println!("{indentation}  AGN phase: {}", black_hole.phase());
+    println!(
+        "{indentation}  Eddington ratio: {:.3e}",
+        black_hole.eddington_ratio()
+    );
+    println!(
+        "{indentation}  Accretion rate: {:.3e} solar masses/year",
+        black_hole.accretion_rate_solar_per_year()
+    );
+    println!(
+        "{indentation}  Bolometric luminosity: {:.3e} W",
+        black_hole.luminosity_watts()
+    );
+}
+
 fn print_system_ancestry(objects: &ObjectRegistry, system_id: universe_sim::StarSystemId) {
     if let Some(cluster_id) = objects
         .star_system(system_id)
@@ -683,13 +707,16 @@ fn print_system_ancestry(objects: &ObjectRegistry, system_id: universe_sim::Star
     }
 }
 
-fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, elapsed: SimDuration) {
+fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, universe: &Universe) {
     match object {
         ObjectRef::Galaxy(galaxy) => {
             let [x, y, z] = galaxy.position().meters();
             println!("GALAXY {}", galaxy.id());
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
             println!("  Star systems: {}", galaxy.star_system_ids().len());
+            if let Some(black_hole) = universe.central_black_hole(galaxy.id()) {
+                print_central_black_hole(black_hole, "  ");
+            }
         }
         ObjectRef::GasCloud(cloud) => {
             let [x, y, z] = cloud.position().meters();
@@ -710,7 +737,7 @@ fn print_object(object: ObjectRef<'_>, objects: &ObjectRegistry, elapsed: SimDur
             println!("  Position: [{x:.3e}, {y:.3e}, {z:.3e}] m");
         }
         ObjectRef::StarCluster(cluster) => {
-            let evolution = cluster.evolution_at(elapsed);
+            let evolution = cluster.evolution_at(universe.clock().elapsed());
             println!("STAR CLUSTER {}", cluster.id());
             println!("  Source cloud: {}", cluster.cloud_id());
             println!("  Formed at: {}", cluster.formed_at());

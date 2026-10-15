@@ -474,6 +474,12 @@ impl ObjectRegistry {
                 })
                 .fold(0.0_f64, f64::max);
             let tidal_multiplier = 1.0 + tidal_strength;
+            let agn_ratio =
+                crate::galaxy::agn_eddington_ratio(galaxy_id, encounters, formation_time);
+            // Radiative and mechanical AGN feedback heats central gas and
+            // lowers its collapse efficiency during an active episode.
+            let agn_formation_multiplier = (1.0 - 0.75 * agn_ratio).max(0.25);
+            let formation_multiplier = tidal_multiplier * agn_formation_multiplier;
             let source = self
                 .gas_clouds
                 .values()
@@ -481,7 +487,7 @@ impl ObjectRegistry {
                 .max_by(|a, b| {
                     let budget = |cloud: &GasCloud| {
                         cloud.mass_solar
-                            * tidal_multiplier
+                            * formation_multiplier
                             * (STAR_FORMATION_EFFICIENCY
                                 + cloud
                                     .pending_shock
@@ -494,7 +500,7 @@ impl ObjectRegistry {
                 .cloned();
             let available_stellar_mass = source.as_ref().map_or(0.0, |cloud| {
                 cloud.mass_solar
-                    * tidal_multiplier
+                    * formation_multiplier
                     * (STAR_FORMATION_EFFICIENCY
                         + cloud
                             .pending_shock

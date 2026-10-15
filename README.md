@@ -230,6 +230,14 @@ star formation by 50%; mergers raise it by 100%. The boost lasts 200 million
 years, works across large time jumps, and is replayed when a previously known
 region is materialized. It draws from stored gas rather than creating mass.
 
+Each galaxy also has a deterministic central black hole whose seed mass depends
+on galaxy size and morphology. Black holes accrete steadily at a low rate and
+enter brighter, fading AGN episodes after close passages and mergers. The
+`galaxies` command and galaxy inspection report black-hole mass and spin,
+accretion rate, Eddington ratio, luminosity, and AGN phase. Active AGN reduce
+cloud star-formation efficiency. Accretion and feedback use population-level
+prescriptions; accreted mass is not drawn from a spatial gas reservoir.
+
 ```console
 cargo run -- galaxies --state universe.state
 cargo run -- encounters --state universe.state

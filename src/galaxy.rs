@@ -3,10 +3,99 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use crate::events::{GalaxyEncounter, GalaxyEncounterKind};
 use crate::id::GalaxyId;
-use crate::objects::{GalaxyCatalogEntry, GalaxyMorphology};
+use crate::objects::{CentralBlackHole, GalaxyCatalogEntry, GalaxyMorphology};
 use crate::rng::derive_object_seed;
 use crate::time::{SimDuration, TimeError};
 use crate::units::{METERS_PER_PARSEC, Position, Velocity};
+
+pub(crate) fn agn_eddington_ratio(
+    galaxy_id: GalaxyId,
+    encounters: &[GalaxyEncounter],
+    elapsed: SimDuration,
+) -> f64 {
+    const STEADY_ACCRETION_RATIO: f64 = 1.0e-6;
+    (STEADY_ACCRETION_RATIO
+        + encounters
+            .iter()
+            .filter(|event| event.involves(galaxy_id) && event.occurred_at() <= elapsed)
+            .map(|event| encounter_eddington_ratio(event, elapsed))
+            .sum::<f64>())
+    .clamp(0.0, 1.0)
+}
+
+pub(crate) fn estimate_central_black_hole(
+    galaxies: &[GalaxyCatalogEntry],
+    progenitors: &BTreeSet<GalaxyId>,
+    encounters: &[GalaxyEncounter],
+    elapsed: SimDuration,
+) -> CentralBlackHole {
+    let mut mass_solar: f64 = galaxies
+        .iter()
+        .filter(|galaxy| progenitors.contains(&galaxy.id()))
+        .map(|galaxy| galaxy.black_hole_seed_mass_solar())
+        .sum();
+    let weighted_spin = galaxies
+        .iter()
+        .filter(|galaxy| progenitors.contains(&galaxy.id()))
+        .map(|galaxy| {
+            (
+                galaxy.black_hole_seed_spin() * galaxy.black_hole_seed_mass_solar(),
+                galaxy.black_hole_seed_mass_solar(),
+            )
+        })
+        .fold((0.0, 0.0), |(spin_sum, mass_sum), (spin, mass)| {
+            (spin_sum + spin, mass_sum + mass)
+        });
+    let integrated_eddington_years = 1.0e-6 * elapsed.seconds() as f64 / 31_557_600.0
+        + encounters
+            .iter()
+            .filter(|event| {
+                event.occurred_at() <= elapsed
+                    && (progenitors.contains(&event.first())
+                        || progenitors.contains(&event.second()))
+            })
+            .map(|event| {
+                let (peak, timescale_myr) = encounter_parameters(event.kind());
+                let age_seconds = elapsed.seconds() - event.occurred_at().seconds();
+                let timescale_years = timescale_myr * 1.0e6;
+                peak * timescale_years
+                    * (1.0 - (-(age_seconds as f64) / (timescale_years * 31_557_600.0)).exp())
+            })
+            .sum::<f64>();
+    // At 10% radiative efficiency, an Eddington-limited black hole grows on
+    // an approximately 45-million-year e-folding timescale.
+    mass_solar *= (integrated_eddington_years / 45.0e6).exp();
+    let spin = if weighted_spin.1 > 0.0 {
+        weighted_spin.0 / weighted_spin.1
+    } else {
+        0.5
+    };
+    let ratio = 1.0e-6
+        + encounters
+            .iter()
+            .filter(|event| {
+                event.occurred_at() <= elapsed
+                    && (progenitors.contains(&event.first())
+                        || progenitors.contains(&event.second()))
+            })
+            .map(|event| encounter_eddington_ratio(event, elapsed))
+            .sum::<f64>()
+            .clamp(0.0, 1.0);
+    CentralBlackHole::from_activity(mass_solar, spin, ratio)
+}
+
+fn encounter_eddington_ratio(event: &GalaxyEncounter, elapsed: SimDuration) -> f64 {
+    let (peak, timescale_myr) = encounter_parameters(event.kind());
+    let age_seconds = elapsed.seconds() - event.occurred_at().seconds();
+    peak * (-(age_seconds as f64) / (timescale_myr * 1.0e6 * 31_557_600.0)).exp()
+}
+
+fn encounter_parameters(kind: GalaxyEncounterKind) -> (f64, f64) {
+    match kind {
+        GalaxyEncounterKind::ClosePass => (0.03, 50.0),
+        GalaxyEncounterKind::Merger => (0.5, 100.0),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct GalaxyMotion {

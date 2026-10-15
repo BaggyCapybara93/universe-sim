@@ -23,11 +23,11 @@ pub use id::{
 };
 pub use matter::MatterInventory;
 pub use objects::{
-    Asteroid, AsteroidBelt, CloudShock, Comet, CometCloud, DebrisDisk, DynamicsMode, Galaxy,
-    GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon, MoonFormationHistory,
-    MoonOrigin, ObjectCounts, ObjectId, ObjectRef, ObjectRegistry, Planet, PlanetAtmosphere,
-    PlanetImpact, PlanetImpactKind, PlanetStatus, PlanetaryComposition, ProtoplanetaryDisk, Star,
-    StarCluster, StarSystem, StellarInteractionKind, StellarStage,
+    AGNPhase, Asteroid, AsteroidBelt, CentralBlackHole, CloudShock, Comet, CometCloud, DebrisDisk,
+    DynamicsMode, Galaxy, GalaxyCatalogEntry, GalaxyMorphology, GasCloud, GasCloudKind, Moon,
+    MoonFormationHistory, MoonOrigin, ObjectCounts, ObjectId, ObjectRef, ObjectRegistry, Planet,
+    PlanetAtmosphere, PlanetImpact, PlanetImpactKind, PlanetStatus, PlanetaryComposition,
+    ProtoplanetaryDisk, Star, StarCluster, StarSystem, StellarInteractionKind, StellarStage,
 };
 pub use orbital::{GravityBody, OrbitalElements, leapfrog_step, propagate_kepler};
 pub use region::{GalaxyRegion, MaterializedRegion, RegionCoord};
